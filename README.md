@@ -213,7 +213,7 @@ cp .env.example .env
 echo "OPENAI_API_KEY=sk-your-key" >> .env
 
 # 3. Run demo with UI
-./start_demo.sh
+./scripts/demo/run_demo.sh
 # Opens http://localhost:3000
 
 # Or CLI demo
@@ -273,31 +273,31 @@ jenkins-cli build marketing-agent-deploy
 ### 🎓 Getting Started
 | Document | Purpose | Time |
 |----------|---------|------|
-| [**SKILLS_SHOWCASE.md**](SKILLS_SHOWCASE.md) | **⭐ START HERE** - Complete overview | 20 min |
-| [GETTING_STARTED.md](GETTING_STARTED.md) | Choose your path | 5 min |
-| [POC_SUMMARY.md](POC_SUMMARY.md) | Feature walkthrough | 15 min |
-| [DEMO_GUIDE.md](DEMO_GUIDE.md) | Presentation script | 10 min |
+| [**SKILLS_SHOWCASE.md**](docs/reference/SKILLS_SHOWCASE.md) | **⭐ START HERE** - Complete overview | 20 min |
+| [GETTING_STARTED.md](docs/getting-started/GETTING_STARTED.md) | Choose your path | 5 min |
+| [POC_SUMMARY.md](docs/guides/implementation/POC_SUMMARY.md) | Feature walkthrough | 15 min |
+| [DEMO_GUIDE.md](docs/guides/demos/DEMO_GUIDE.md) | Presentation script | 10 min |
 
 ### 🏗️ Infrastructure & Deployment
 | Document | Purpose | Difficulty |
 |----------|---------|-----------|
-| [**Terraform Setup**](docs/TERRAFORM_SETUP.md) | Multi-cloud provisioning | ⭐⭐⭐ |
-| [CI/CD Setup Guide](docs/CICD_SETUP_GUIDE.md) | End-to-end pipelines | ⭐⭐⭐ |
-| [Quick Reference](docs/CICD_QUICK_REFERENCE.md) | Common commands | ⭐ |
+| [**Terraform Setup**](docs/deployment/TERRAFORM_SETUP.md) | Multi-cloud provisioning | ⭐⭐⭐ |
+| [CI/CD Setup Guide](docs/deployment/CICD_SETUP_GUIDE.md) | End-to-end pipelines | ⭐⭐⭐ |
+| [Quick Reference](docs/deployment/CICD_QUICK_REFERENCE.md) | Common commands | ⭐ |
 
 ### 🤖 AI Engineering
 | Document | Purpose | Level |
 |----------|---------|-------|
-| [**Production Patterns**](docs/PRODUCTION_PATTERNS.md) | Best practices | Advanced |
-| [AI Observability](docs/AI_OBSERVABILITY.md) | Tracing & monitoring | Intermediate |
+| [**Production Patterns**](docs/guides/PRODUCTION_PATTERNS.md) | Best practices | Advanced |
+| [AI Observability](docs/monitoring/AI_OBSERVABILITY.md) | Tracing & monitoring | Intermediate |
 | [Evaluation README](src/evaluation/README.md) | Testing framework | Intermediate |
 
 ### 📊 Monitoring Integration
 | Platform | Documentation | Setup Time |
 |----------|--------------|------------|
-| **Datadog** | [Integration Guide](docs/DATADOG_INTEGRATION.md) | 30 min |
-| **New Relic** | [Integration Guide](docs/NEWRELIC_INTEGRATION.md) | 30 min |
-| **Sumologic** | [Integration Guide](docs/SUMOLOGIC_INTEGRATION.md) | 30 min |
+| **Datadog** | [Integration Guide](docs/monitoring/DATADOG_INTEGRATION.md) | 30 min |
+| **Prometheus + Grafana** | [Built-in](monitoring/grafana/dashboards/) | 15 min |
+| **LangSmith** | [AI Observability](docs/monitoring/AI_OBSERVABILITY.md) | 10 min |
 
 ### 🔄 CI/CD Platforms
 | Platform | Configuration | Features |
@@ -502,22 +502,22 @@ safety check --json > vulnerability-report.json
 ## 🎓 Learning Resources
 
 ### For Beginners
-1. Start with [GETTING_STARTED.md](GETTING_STARTED.md)
-2. Run the demo: `./start_demo.sh`
-3. Read [POC_SUMMARY.md](POC_SUMMARY.md)
+1. Start with [GETTING_STARTED.md](docs/getting-started/GETTING_STARTED.md)
+2. Run the demo: `./scripts/demo/run_demo.sh`
+3. Read [POC_SUMMARY.md](docs/guides/implementation/POC_SUMMARY.md)
 
 ### For Developers
-1. Read [Production Patterns](docs/PRODUCTION_PATTERNS.md)
+1. Read [Production Patterns](docs/guides/PRODUCTION_PATTERNS.md)
 2. Explore [src/agent/workflow.py](src/agent/workflow.py)
 3. Review [evaluation framework](src/evaluation/)
 
 ### For DevOps Engineers
-1. Study [Terraform Setup](docs/TERRAFORM_SETUP.md)
-2. Review [CI/CD Setup Guide](docs/CICD_SETUP_GUIDE.md)
+1. Study [Terraform Setup](docs/deployment/TERRAFORM_SETUP.md)
+2. Review [CI/CD Setup Guide](docs/deployment/CICD_SETUP_GUIDE.md)
 3. Explore [monitoring configs](infrastructure/terraform/monitoring.tf)
 
 ### For AI/ML Engineers
-1. Read [AI Observability](docs/AI_OBSERVABILITY.md)
+1. Read [AI Observability](docs/monitoring/AI_OBSERVABILITY.md)
 2. Study [evaluator implementation](src/evaluation/evaluator.py)
 3. Review [golden datasets](evaluation/datasets/golden/)
 
@@ -575,7 +575,7 @@ If you find this valuable for learning production AI engineering:
 
 - **Issues**: [GitHub Issues](../../issues)
 - **Discussions**: [GitHub Discussions](../../discussions)
-- **Documentation**: Start with [SKILLS_SHOWCASE.md](SKILLS_SHOWCASE.md)
+- **Documentation**: Start with [SKILLS_SHOWCASE.md](docs/reference/SKILLS_SHOWCASE.md)
 
 ---
 
@@ -583,6 +583,6 @@ If you find this valuable for learning production AI engineering:
 
 **🚀 Built to demonstrate real-world production AI engineering**
 
-[Getting Started](GETTING_STARTED.md) • [Skills Showcase](SKILLS_SHOWCASE.md) • [Documentation](docs/) • [CI/CD](.github/workflows/)
+[Getting Started](docs/getting-started/GETTING_STARTED.md) • [Skills Showcase](docs/reference/SKILLS_SHOWCASE.md) • [Documentation](docs/) • [CI/CD](.github/workflows/)
 
 </div>
