@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: marketing-agent-config
+  namespace: marketing-agent
+data:
+  ENVIRONMENT: "production"
+  LOG_LEVEL: "INFO"
+  DATABASE_HOST: "postgres"
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: "marketing_agent"
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+  API_HOST: "0.0.0.0"
+  API_PORT: "8000"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: marketing-agent-secrets
+  namespace: marketing-agent
+type: Opaque
+stringData:
+  # These should be replaced with actual secrets in production
+  # Use external secret management (e.g., HashiCorp Vault, AWS Secrets Manager)
+  DATABASE_PASSWORD: "changeme"
+  OPENAI_API_KEY: "sk-changeme"
+  ANTHROPIC_API_KEY: "changeme"
+  REDIS_PASSWORD: ""
+  SECRET_KEY: "changeme-secret-key"

@@ -1,0 +1,278 @@
+name: PR Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  # PR validation
+  pr-validation:
+    name: PR Validation
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Check PR title
+        uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            style
+            refactor
+            perf
+            test
+            build
+            ci
+            chore
+          requireScope: false
+      
+      - name: Check for merge conflicts
+        run: |
+          git fetch origin ${{ github.base_ref }}
+          if git merge-tree $(git merge-base HEAD origin/${{ github.base_ref }}) HEAD origin/${{ github.base_ref }} | grep -q '<<<<<'; then
+            echo "Merge conflicts detected!"
+            exit 1
+          fi
+      
+      - name: Check file size
+        run: |
+          # Check for files larger than 1MB
+          large_files=$(find . -type f -size +1M -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/dist/*" -not -path "*/build/*")
+          if [ -n "$large_files" ]; then
+            echo "Large files detected:"
+            echo "$large_files"
+            echo "Please use Git LFS for large files"
+            exit 1
+          fi
+  
+  # Code quality checks
+  code-quality:
+    name: Code Quality Analysis
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install radon complexity-report
+          pip install -e ".[dev]"
+      
+      - name: Check code complexity
+        run: |
+          radon cc src/ -a -nb
+          radon mi src/ -nb
+      
+      - name: Check maintainability
+        run: |
+          radon mi src/ -s -j > maintainability-report.json
+        continue-on-error: true
+      
+      - name: Upload maintainability report
+        uses: actions/upload-artifact@v4
+        with:
+          name: maintainability-report
+          path: maintainability-report.json
+  
+  # Test coverage check
+  coverage-check:
+    name: Test Coverage Check
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: marketing_agent_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      
+      - name: Run tests with coverage
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/marketing_agent_test
+          REDIS_URL: redis://localhost:6379
+        run: |
+          pytest tests/ -v --cov=src --cov-report=xml --cov-report=html --cov-report=term
+      
+      - name: Check coverage threshold
+        run: |
+          coverage report --fail-under=70
+      
+      - name: Comment coverage on PR
+        uses: py-cov-action/python-coverage-comment-action@v3
+        with:
+          GITHUB_TOKEN: ${{ github.token }}
+          MINIMUM_GREEN: 80
+          MINIMUM_ORANGE: 70
+  
+  # Changed files analysis
+  changed-files:
+    name: Analyze Changed Files
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v41
+        with:
+          files: |
+            src/**/*.py
+            tests/**/*.py
+            frontend/src/**/*.{ts,tsx}
+      
+      - name: List changed files
+        run: |
+          echo "Changed files:"
+          echo "${{ steps.changed-files.outputs.all_changed_files }}"
+      
+      - name: Check if tests were added
+        if: steps.changed-files.outputs.any_changed == 'true'
+        run: |
+          changed_src_files=$(echo "${{ steps.changed-files.outputs.all_changed_files }}" | grep "^src/" | wc -l)
+          changed_test_files=$(echo "${{ steps.changed-files.outputs.all_changed_files }}" | grep "^tests/" | wc -l)
+          
+          if [ "$changed_src_files" -gt 0 ] && [ "$changed_test_files" -eq 0 ]; then
+            echo "::warning::Source files were modified but no tests were added or updated"
+          fi
+  
+  # Performance impact check
+  performance-check:
+    name: Performance Impact Check
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    
+    steps:
+      - name: Checkout base branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref }}
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies (base)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install pytest-benchmark
+      
+      - name: Run benchmark (base)
+        run: |
+          pytest tests/ -k benchmark --benchmark-only --benchmark-json=benchmark-base.json
+        continue-on-error: true
+      
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+      
+      - name: Install dependencies (PR)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          pip install pytest-benchmark
+      
+      - name: Run benchmark (PR)
+        run: |
+          pytest tests/ -k benchmark --benchmark-only --benchmark-json=benchmark-pr.json
+        continue-on-error: true
+      
+      - name: Compare benchmarks
+        run: |
+          if [ -f benchmark-base.json ] && [ -f benchmark-pr.json ]; then
+            pytest-benchmark compare benchmark-base.json benchmark-pr.json
+          fi
+        continue-on-error: true
+  
+  # Automated PR labeling
+  auto-label:
+    name: Auto Label PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Label PR based on changed files
+        uses: actions/labeler@v5
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          configuration-path: .github/labeler.yml
+  
+  # Size label
+  pr-size:
+    name: PR Size Labeling
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    
+    steps:
+      - name: Label PR size
+        uses: codelytv/pr-size-labeler@v1
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          xs_max_size: '10'
+          s_max_size: '100'
+          m_max_size: '500'
+          l_max_size: '1000'
+          fail_if_xl: 'false'

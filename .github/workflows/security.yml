@@ -1,0 +1,247 @@
+name: Security Scanning
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run security scans daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  # Dependency vulnerability scanning
+  dependency-scan:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install safety pip-audit
+      
+      - name: Run Safety check (Python)
+        run: |
+          pip freeze | safety check --stdin --json > safety-report.json
+        continue-on-error: true
+      
+      - name: Run pip-audit
+        run: |
+          pip-audit --format json --output pip-audit-report.json
+        continue-on-error: true
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      
+      - name: Run npm audit (Frontend)
+        working-directory: frontend
+        run: |
+          npm audit --audit-level=moderate --json > ../npm-audit-report.json
+        continue-on-error: true
+      
+      - name: Upload security reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            safety-report.json
+            pip-audit-report.json
+            npm-audit-report.json
+  
+  # SAST - Static Application Security Testing
+  sast-scan:
+    name: SAST Scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python, javascript
+          queries: security-extended
+      
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+      
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+      
+      - name: Run Bandit (Python Security Linter)
+        run: |
+          pip install bandit
+          bandit -r src/ -f json -o bandit-report.json
+        continue-on-error: true
+      
+      - name: Upload Bandit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.json
+  
+  # Secrets scanning
+  secret-scan:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for secret scanning
+      
+      - name: TruffleHog Secret Scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --debug --only-verified
+  
+  # Container image scanning
+  container-scan:
+    name: Container Image Scan
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Build backend image for scanning
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./infrastructure/docker/Dockerfile.backend
+          push: false
+          load: true
+          tags: marketing-agent-backend:scan
+      
+      - name: Run Trivy vulnerability scanner (Backend)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: marketing-agent-backend:scan
+          format: 'sarif'
+          output: 'trivy-backend-results.sarif'
+          severity: 'CRITICAL,HIGH'
+      
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-backend-results.sarif'
+          category: 'backend-container'
+      
+      - name: Build frontend image for scanning
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./infrastructure/docker/Dockerfile.frontend
+          push: false
+          load: true
+          tags: marketing-agent-frontend:scan
+      
+      - name: Run Trivy vulnerability scanner (Frontend)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: marketing-agent-frontend:scan
+          format: 'sarif'
+          output: 'trivy-frontend-results.sarif'
+          severity: 'CRITICAL,HIGH'
+      
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: 'trivy-frontend-results.sarif'
+          category: 'frontend-container'
+  
+  # Infrastructure as Code scanning
+  iac-scan:
+    name: IaC Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Run Checkov (IaC Scanner)
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: infrastructure/
+          framework: terraform,kubernetes,dockerfile
+          output_format: sarif
+          output_file_path: checkov-results.sarif
+          skip_check: CKV_DOCKER_2,CKV_DOCKER_3
+      
+      - name: Upload Checkov results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov-results.sarif
+          category: 'iac'
+  
+  # License compliance check
+  license-scan:
+    name: License Compliance
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-licenses
+          pip install -e .
+      
+      - name: Check Python licenses
+        run: |
+          pip-licenses --format=json --output-file=python-licenses.json
+          pip-licenses --format=markdown --output-file=python-licenses.md
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      
+      - name: Check npm licenses
+        working-directory: frontend
+        run: |
+          npm install -g license-checker
+          license-checker --json --out ../npm-licenses.json
+          license-checker --markdown --out ../npm-licenses.md
+      
+      - name: Upload license reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: license-reports
+          path: |
+            python-licenses.json
+            python-licenses.md
+            npm-licenses.json
+            npm-licenses.md

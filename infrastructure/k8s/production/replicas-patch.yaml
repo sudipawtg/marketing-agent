@@ -1,0 +1,13 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marketing-agent-backend
+spec:
+  replicas: 5
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marketing-agent-frontend
+spec:
+  replicas: 3

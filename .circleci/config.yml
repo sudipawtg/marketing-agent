@@ -1,0 +1,666 @@
+# CircleCI 2.1 Configuration for Marketing Agent
+# Full CI/CD pipeline with AI evaluation and multi-cloud deployment
+
+version: 2.1
+
+# Orbs - Reusable packages of configuration
+orbs:
+  aws-cli: circleci/aws-cli@4.1.0
+  aws-ecr: circleci/aws-ecr@9.0.0
+  aws-eks: circleci/aws-eks@2.2.0
+  kubernetes: circleci/kubernetes@1.3.1
+  python: circleci/python@2.1.1
+  docker: circleci/docker@2.4.0
+  node: circleci/node@5.1.0
+  slack: circleci/slack@4.12.0
+
+# Executors - Environments for running jobs
+executors:
+  python-executor:
+    docker:
+      - image: cimg/python:3.11
+        environment:
+          PYTHONUNBUFFERED: "1"
+          PIP_NO_CACHE_DIR: "1"
+    resource_class: medium+
+    working_directory: ~/marketing-agent
+
+  node-executor:
+    docker:
+      - image: cimg/node:20.10
+    resource_class: medium
+    working_directory: ~/marketing-agent
+
+  machine-executor:
+    machine:
+      image: ubuntu-2204:2023.10.1
+    resource_class: medium
+    working_directory: ~/marketing-agent
+
+# Commands - Reusable command sequences
+commands:
+  restore-python-cache:
+    steps:
+      - restore_cache:
+          keys:
+            - v1-python-deps-{{ checksum "pyproject.toml" }}
+            - v1-python-deps-
+
+  save-python-cache:
+    steps:
+      - save_cache:
+          key: v1-python-deps-{{ checksum "pyproject.toml" }}
+          paths:
+            - ~/.cache/pip
+            - ./venv
+
+  restore-node-cache:
+    steps:
+      - restore_cache:
+          keys:
+            - v1-node-deps-{{ checksum "frontend/package-lock.json" }}
+            - v1-node-deps-
+
+  save-node-cache:
+    steps:
+      - save_cache:
+          key: v1-node-deps-{{ checksum "frontend/package-lock.json" }}
+          paths:
+            - frontend/node_modules
+
+  setup-aws-credentials:
+    steps:
+      - aws-cli/setup:
+          role_arn: "${AWS_ROLE_ARN}"
+          region: "${AWS_DEFAULT_REGION}"
+
+  notify-slack-on-failure:
+    steps:
+      - slack/notify:
+          event: fail
+          custom: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "❌ Build Failed - Marketing Agent"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {"type": "mrkdwn", "text": "*Branch:*\n${CIRCLE_BRANCH}"},
+                    {"type": "mrkdwn", "text": "*Build:*\n#${CIRCLE_BUILD_NUM}"},
+                    {"type": "mrkdwn", "text": "*Author:*\n${CIRCLE_USERNAME}"},
+                    {"type": "mrkdwn", "text": "*Job:*\n${CIRCLE_JOB}"}
+                  ]
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": {"type": "plain_text", "text": "View Build"},
+                      "url": "${CIRCLE_BUILD_URL}"
+                    }
+                  ]
+                }
+              ]
+            }
+
+  notify-slack-on-success:
+    steps:
+      - slack/notify:
+          event: pass
+          custom: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "✅ Deployment Successful - Marketing Agent"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {"type": "mrkdwn", "text": "*Environment:*\n${ENVIRONMENT}"},
+                    {"type": "mrkdwn", "text": "*Version:*\n${CIRCLE_SHA1:0:8}"},
+                    {"type": "mrkdwn", "text": "*Branch:*\n${CIRCLE_BRANCH}"},
+                    {"type": "mrkdwn", "text": "*Build:*\n#${CIRCLE_BUILD_NUM}"}
+                  ]
+                }
+              ]
+            }
+
+# Jobs - Individual units of work
+jobs:
+  checkout-code:
+    executor: python-executor
+    steps:
+      - checkout
+      - persist_to_workspace:
+          root: ~/
+          paths:
+            - marketing-agent
+
+  # Python Backend Jobs
+  lint-backend:
+    executor: python-executor
+    steps:
+      - attach_workspace:
+          at: ~/
+      - restore-python-cache
+      - run:
+          name: Install dependencies
+          command: |
+            python -m venv venv
+            . venv/bin/activate
+            pip install --upgrade pip
+            pip install -e ".[dev]"
+            pip install black flake8 mypy isort
+      - save-python-cache
+      - run:
+          name: Run Black formatter check
+          command: |
+            . venv/bin/activate
+            black --check src/ tests/
+      - run:
+          name: Run Flake8 linter
+          command: |
+            . venv/bin/activate
+            flake8 src/ tests/ --max-line-length=100 --extend-ignore=E203,W503 --format=html --htmldir=flake8-report
+      - run:
+          name: Run isort import checker
+          command: |
+            . venv/bin/activate
+            isort --check-only src/ tests/
+      - store_artifacts:
+          path: flake8-report
+          destination: linting-report
+      - notify-slack-on-failure
+
+  type-check-backend:
+    executor: python-executor
+    steps:
+      - attach_workspace:
+          at: ~/
+      - restore-python-cache
+      - run:
+          name: Install dependencies
+          command: |
+            python -m venv venv
+            . venv/bin/activate
+            pip install -e ".[dev]"
+            pip install mypy types-requests types-redis
+      - run:
+          name: Run mypy type checker
+          command: |
+            . venv/bin/activate
+            mypy src/ --ignore-missing-imports --html-report mypy-report
+      - store_artifacts:
+          path: mypy-report
+          destination: type-check-report
+      - notify-slack-on-failure
+
+  test-backend:
+    executor: python-executor
+    parallelism: 4
+    steps:
+      - attach_workspace:
+          at: ~/
+      - restore-python-cache
+      - run:
+          name: Install dependencies
+          command: |
+            python -m venv venv
+            . venv/bin/activate
+            pip install -e ".[dev]"
+            pip install pytest pytest-cov pytest-asyncio pytest-xdist pytest-split
+      - run:
+          name: Run unit tests with coverage
+          command: |
+            . venv/bin/activate
+            mkdir -p test-results
+            pytest tests/unit/ \
+              --splits 4 \
+              --group $(expr $CIRCLE_NODE_INDEX + 1) \
+              --verbose \
+              --cov=src \
+              --cov-report=html:coverage-report \
+              --cov-report=xml:coverage.xml \
+              --cov-report=term \
+              --junit-xml=test-results/pytest.xml
+      - store_test_results:
+          path: test-results
+      - store_artifacts:
+          path: coverage-report
+          destination: coverage
+      - store_artifacts:
+          path: coverage.xml
+      - persist_to_workspace:
+          root: ~/
+          paths:
+            - marketing-agent/coverage.xml
+      - notify-slack-on-failure
+
+  ai-evaluation:
+    executor: python-executor
+    steps:
+      - attach_workspace:
+          at: ~/
+      - restore-python-cache
+      - run:
+          name: Install dependencies
+          command: |
+            python -m venv venv
+            . venv/bin/activate
+            pip install -e ".[dev]"
+      - run:
+          name: Run AI evaluation against golden datasets
+          command: |
+            . venv/bin/activate
+            python scripts/run_evaluation.py \
+              --dataset evaluation/datasets/golden/campaign_optimization.json \
+              --dataset evaluation/datasets/golden/creative_performance.json \
+              --output evaluation/results/circleci-${CIRCLE_BUILD_NUM}.json \
+              --format json
+      - run:
+          name: Check evaluation thresholds
+          command: |
+            . venv/bin/activate
+            python scripts/check_evaluation_thresholds.py \
+              evaluation/results/circleci-${CIRCLE_BUILD_NUM}.json
+      - run:
+          name: Generate evaluation report
+          command: |
+            . venv/bin/activate
+            python scripts/generate_evaluation_report.py \
+              evaluation/results/circleci-${CIRCLE_BUILD_NUM}.json \
+              --output evaluation/reports/circleci-${CIRCLE_BUILD_NUM}.html
+      - store_artifacts:
+          path: evaluation/results
+          destination: evaluation-results
+      - store_artifacts:
+          path: evaluation/reports
+          destination: evaluation-reports
+      - run:
+          name: Post evaluation comment to PR
+          command: |
+            if [ -n "$CIRCLE_PULL_REQUEST" ]; then
+              . venv/bin/activate
+              python scripts/post_evaluation_comment.py \
+                evaluation/results/circleci-${CIRCLE_BUILD_NUM}.json \
+                --pr-url "$CIRCLE_PULL_REQUEST"
+            fi
+      - notify-slack-on-failure
+
+  security-scan-backend:
+    executor: python-executor
+    steps:
+      - attach_workspace:
+          at: ~/
+      - restore-python-cache
+      - run:
+          name: Install security tools
+          command: |
+            python -m venv venv
+            . venv/bin/activate
+            pip install bandit safety pip-audit
+      - run:
+          name: Run Bandit security scan
+          command: |
+            . venv/bin/activate
+            bandit -r src/ -f json -o bandit-report.json || true
+      - run:
+          name: Run Safety vulnerability check
+          command: |
+            . venv/bin/activate
+            safety check --json > safety-report.json || true
+      - run:
+          name: Run pip-audit
+          command: |
+            . venv/bin/activate
+            pip-audit --format json --output pip-audit-report.json || true
+      - store_artifacts:
+          path: bandit-report.json
+      - store_artifacts:
+          path: safety-report.json
+      - store_artifacts:
+          path: pip-audit-report.json
+      - notify-slack-on-failure
+
+  # Frontend Jobs
+  lint-frontend:
+    executor: node-executor
+    steps:
+      - attach_workspace:
+          at: ~/
+      - restore-node-cache
+      - run:
+          name: Install dependencies
+          command: cd frontend && npm ci
+      - save-node-cache
+      - run:
+          name: Run ESLint
+          command: cd frontend && npm run lint
+      - run:
+          name: Run Prettier check
+          command: cd frontend && npm run format:check
+      - notify-slack-on-failure
+
+  test-frontend:
+    executor: node-executor
+    steps:
+      - attach_workspace:
+          at: ~/
+      - restore-node-cache
+      - run:
+          name: Install dependencies
+          command: cd frontend && npm ci
+      - run:
+          name: Run tests
+          command: cd frontend && npm run test:ci
+      - store_test_results:
+          path: frontend/test-results
+      - store_artifacts:
+          path: frontend/coverage
+          destination: frontend-coverage
+      - notify-slack-on-failure
+
+  build-frontend:
+    executor: node-executor
+    steps:
+      - attach_workspace:
+          at: ~/
+      - restore-node-cache
+      - run:
+          name: Build frontend
+          command: cd frontend && npm run build
+      - persist_to_workspace:
+          root: ~/
+          paths:
+            - marketing-agent/frontend/dist
+      - notify-slack-on-failure
+
+  # Docker Build Jobs
+  build-and-push-backend-image:
+    executor: machine-executor
+    steps:
+      - attach_workspace:
+          at: ~/
+      - aws-ecr/build-and-push-image:
+          repo: marketing-agent-backend
+          tag: ${CIRCLE_SHA1:0:8},latest
+          dockerfile: infrastructure/docker/Dockerfile.backend
+          extra-build-args: --target production --build-arg ENVIRONMENT=${ENVIRONMENT}
+      - run:
+          name: Scan image with Trivy
+          command: |
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              aquasec/trivy:latest image \
+              --severity HIGH,CRITICAL \
+              --format json \
+              --output trivy-backend.json \
+              ${AWS_ECR_REGISTRY_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/marketing-agent-backend:${CIRCLE_SHA1:0:8}
+      - store_artifacts:
+          path: trivy-backend.json
+      - notify-slack-on-failure
+
+  build-and-push-frontend-image:
+    executor: machine-executor
+    steps:
+      - attach_workspace:
+          at: ~/
+      - aws-ecr/build-and-push-image:
+          repo: marketing-agent-frontend
+          tag: ${CIRCLE_SHA1:0:8},latest
+          dockerfile: infrastructure/docker/Dockerfile.frontend
+          extra-build-args: --target production --build-arg VITE_API_URL=/api
+      - run:
+          name: Scan image with Trivy
+          command: |
+            docker run --rm \
+              -v /var/run/docker.sock:/var/run/docker.sock \
+              aquasec/trivy:latest image \
+              --severity HIGH,CRITICAL \
+              --format json \
+              --output trivy-frontend.json \
+              ${AWS_ECR_REGISTRY_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/marketing-agent-frontend:${CIRCLE_SHA1:0:8}
+      - store_artifacts:
+          path: trivy-frontend.json
+      - notify-slack-on-failure
+
+  # Deployment Jobs
+  deploy-to-staging:
+    executor: python-executor
+    environment:
+      ENVIRONMENT: staging
+    steps:
+      - attach_workspace:
+          at: ~/
+      - setup-aws-credentials
+      - aws-eks/update-kubeconfig-with-authenticator:
+          cluster-name: marketing-agent-cluster
+          aws-region: ${AWS_DEFAULT_REGION}
+      - run:
+          name: Deploy to staging
+          command: |
+            cd infrastructure/k8s/staging
+            kustomize edit set image \
+              backend=${AWS_ECR_REGISTRY_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/marketing-agent-backend:${CIRCLE_SHA1:0:8} \
+              frontend=${AWS_ECR_REGISTRY_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/marketing-agent-frontend:${CIRCLE_SHA1:0:8}
+            kubectl apply -k .
+      - run:
+          name: Wait for rollout
+          command: |
+            kubectl rollout status deployment/marketing-agent-backend -n staging --timeout=5m
+            kubectl rollout status deployment/marketing-agent-frontend -n staging --timeout=5m
+      - notify-slack-on-success
+      - notify-slack-on-failure
+
+  deploy-to-production:
+    executor: python-executor
+    environment:
+      ENVIRONMENT: production
+    steps:
+      - attach_workspace:
+          at: ~/
+      - setup-aws-credentials
+      - aws-eks/update-kubeconfig-with-authenticator:
+          cluster-name: marketing-agent-cluster
+          aws-region: ${AWS_DEFAULT_REGION}
+      - run:
+          name: Deploy to production
+          command: |
+            cd infrastructure/k8s/production
+            kustomize edit set image \
+              backend=${AWS_ECR_REGISTRY_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/marketing-agent-backend:${CIRCLE_SHA1:0:8} \
+              frontend=${AWS_ECR_REGISTRY_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/marketing-agent-frontend:${CIRCLE_SHA1:0:8}
+            kubectl apply -k .
+      - run:
+          name: Wait for rollout
+          command: |
+            kubectl rollout status deployment/marketing-agent-backend -n production --timeout=10m
+            kubectl rollout status deployment/marketing-agent-frontend -n production --timeout=10m
+      - run:
+          name: Create release tag
+          command: |
+            VERSION=$(python -c "import tomli; print(tomli.load(open('pyproject.toml', 'rb'))['project']['version'])")
+            git tag -a "v${VERSION}-${CIRCLE_BUILD_NUM}" -m "Release v${VERSION} build ${CIRCLE_BUILD_NUM}"
+            git push origin "v${VERSION}-${CIRCLE_BUILD_NUM}"
+      - notify-slack-on-success
+      - notify-slack-on-failure
+
+  integration-tests:
+    executor: python-executor
+    steps:
+      - attach_workspace:
+          at: ~/
+      - restore-python-cache
+      - setup-aws-credentials
+      - run:
+          name: Get service URL
+          command: |
+            export API_URL=$(kubectl get service marketing-agent-backend -n ${ENVIRONMENT} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+            echo "export API_URL=${API_URL}" >> $BASH_ENV
+      - run:
+          name: Run integration tests
+          command: |
+            . venv/bin/activate
+            pytest tests/integration/ \
+              --base-url=https://${API_URL} \
+              --verbose \
+              --junit-xml=integration-results.xml
+      - store_test_results:
+          path: integration-results.xml
+      - notify-slack-on-failure
+
+  send-metrics-to-datadog:
+    executor: python-executor
+    steps:
+      - run:
+          name: Send build metrics to Datadog
+          command: |
+            curl -X POST "https://api.datadoghq.com/api/v1/series?api_key=${DATADOG_API_KEY}" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"series\": [{
+                  \"metric\": \"circleci.build\",
+                  \"points\": [[$(date +%s), 1]],
+                  \"type\": \"count\",
+                  \"tags\": [
+                    \"environment:${ENVIRONMENT}\",
+                    \"branch:${CIRCLE_BRANCH}\",
+                    \"status:${CIRCLE_JOB}\",
+                    \"service:marketing-agent\"
+                  ]
+                }]
+              }"
+
+# Workflows - Orchestrate jobs
+workflows:
+  version: 2
+
+  # PR Checks
+  pr-check:
+    jobs:
+      - checkout-code:
+          filters:
+            branches:
+              ignore: [main, staging]
+      - lint-backend:
+          requires: [checkout-code]
+      - type-check-backend:
+          requires: [checkout-code]
+      - test-backend:
+          requires: [checkout-code]
+      - ai-evaluation:
+          requires: [checkout-code]
+      - security-scan-backend:
+          requires: [checkout-code]
+      - lint-frontend:
+          requires: [checkout-code]
+      - test-frontend:
+          requires: [checkout-code]
+
+  # Staging Deployment
+  deploy-staging:
+    jobs:
+      - checkout-code:
+          filters:
+            branches:
+              only: staging
+      - lint-backend:
+          requires: [checkout-code]
+      - test-backend:
+          requires: [checkout-code]
+      - ai-evaluation:
+          requires: [checkout-code]
+      - security-scan-backend:
+          requires: [checkout-code]
+      - lint-frontend:
+          requires: [checkout-code]
+      - test-frontend:
+          requires: [checkout-code]
+      - build-frontend:
+          requires: [test-frontend]
+      - build-and-push-backend-image:
+          requires: [test-backend, ai-evaluation]
+      - build-and-push-frontend-image:
+          requires: [build-frontend]
+      - deploy-to-staging:
+          requires:
+            - build-and-push-backend-image
+            - build-and-push-frontend-image
+      - integration-tests:
+          requires: [deploy-to-staging]
+      - send-metrics-to-datadog:
+          requires: [deploy-to-staging]
+
+  # Production Deployment
+  deploy-production:
+    jobs:
+      - checkout-code:
+          filters:
+            branches:
+              only: main
+      - lint-backend:
+          requires: [checkout-code]
+      - test-backend:
+          requires: [checkout-code]
+      - ai-evaluation:
+          requires: [checkout-code]
+      - security-scan-backend:
+          requires: [checkout-code]
+      - lint-frontend:
+          requires: [checkout-code]
+      - test-frontend:
+          requires: [checkout-code]
+      - build-frontend:
+          requires: [test-frontend]
+      - build-and-push-backend-image:
+          requires: [test-backend, ai-evaluation]
+      - build-and-push-frontend-image:
+          requires: [build-frontend]
+      - hold-for-approval:
+          type: approval
+          requires:
+            - build-and-push-backend-image
+            - build-and-push-frontend-image
+      - deploy-to-production:
+          requires: [hold-for-approval]
+      - integration-tests:
+          requires: [deploy-to-production]
+      - send-metrics-to-datadog:
+          requires: [deploy-to-production]
+
+  # Nightly Evaluation
+  nightly-evaluation:
+    triggers:
+      - schedule:
+          cron: "0 2 * * *"
+          filters:
+            branches:
+              only: main
+    jobs:
+      - checkout-code
+      - ai-evaluation:
+          requires: [checkout-code]
+
+  # Weekly Security Scan
+  weekly-security-scan:
+    triggers:
+      - schedule:
+          cron: "0 0 * * 0"
+          filters:
+            branches:
+              only: main
+    jobs:
+      - checkout-code
+      - security-scan-backend:
+          requires: [checkout-code]

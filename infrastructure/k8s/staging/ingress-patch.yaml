@@ -1,0 +1,32 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: marketing-agent-ingress
+spec:
+  tls:
+    - hosts:
+        - staging.marketing-agent.example.com
+        - api.staging.marketing-agent.example.com
+      secretName: marketing-agent-staging-tls
+  rules:
+    - host: staging.marketing-agent.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: marketing-agent-frontend
+                port:
+                  number: 80
+    
+    - host: api.staging.marketing-agent.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: marketing-agent-backend
+                port:
+                  number: 8000

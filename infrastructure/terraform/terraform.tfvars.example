@@ -1,0 +1,335 @@
+################################################################################
+# Terraform Variables Configuration Example
+################################################################################
+#
+# Instructions:
+#   1. Copy this file: cp terraform.tfvars.example terraform.tfvars
+#   2. Update values for your environment
+#   3. NEVER commit terraform.tfvars to version control (it's in .gitignore)
+#   4. Use environment variables for sensitive values in CI/CD:
+#      export TF_VAR_openai_api_key="sk-..."
+#
+################################################################################
+
+# ============================
+# Environment Configuration
+# ============================
+
+# Deployment environment: development, staging, or production
+environment = "staging"
+
+# Project identifier (used in resource naming)
+project_name = "marketing-agent"
+
+# ============================
+# Cloud Provider Selection
+# ============================
+# Choose ONE: "aws", "gcp", or "azure"
+
+cloud_provider = "aws"
+
+# ============================
+# AWS Configuration
+# ============================
+# Required when cloud_provider = "aws"
+
+aws_region = "us-east-1"
+
+# Alternative regions:
+# - us-east-1 (N. Virginia) - Lowest cost, most services
+# - us-west-2 (Oregon) - Low latency to West Coast
+# - eu-west-1 (Ireland) - GDPR compliance
+# - ap-southeast-1 (Singapore) - Asia-Pacific
+
+# ============================
+# GCP Configuration
+# ============================
+# Required when cloud_provider = "gcp"
+
+# gcp_project = "my-gcp-project-id"
+# gcp_region  = "us-central1"
+# gcp_zone    = "us-central1-a"
+
+# Alternative regions:
+# - us-central1 (Iowa) - Low cost, central US
+# - us-west1 (Oregon) - West Coast
+# - europe-west1 (Belgium) - EU data residency
+# - asia-northeast1 (Tokyo) - Asia-Pacific
+
+# ============================
+# Azure Configuration
+# ============================
+# Required when cloud_provider = "azure"
+
+# azure_location = "eastus"
+
+# Alternative locations:
+# - eastus (Virginia) - Lowest cost
+# - westus2 (Washington) - West Coast
+# - westeurope (Netherlands) - EU data residency
+# - southeastasia (Singapore) - Asia-Pacific
+
+# ============================
+# Kubernetes Cluster Settings
+# ============================
+
+# Cluster name (must be unique within region)
+cluster_name = "marketing-agent-cluster"
+
+# Kubernetes version (check cloud provider for supported versions)
+cluster_version = "1.28"
+
+# Number of worker nodes
+# Development: 1-2 nodes
+# Staging: 2-3 nodes
+# Production: 3-5 nodes (with autoscaling)
+node_count = 3
+
+# Worker node instance type
+# AWS options:
+#   - t3.medium   (2 vCPU, 4 GB RAM)  - $30/month - Staging
+#   - t3.large    (2 vCPU, 8 GB RAM)  - $60/month
+#   - t3.xlarge   (4 vCPU, 16 GB RAM) - $120/month - Production
+#   - m5.large    (2 vCPU, 8 GB RAM)  - $70/month - Better performance
+#   - m5.xlarge   (4 vCPU, 16 GB RAM) - $140/month
+node_instance_type = "t3.medium"
+
+# GCP options:
+#   - e2-medium      (2 vCPU, 4 GB)  - Staging
+#   - e2-standard-2  (2 vCPU, 8 GB)
+#   - e2-standard-4  (4 vCPU, 16 GB) - Production
+
+# Azure options:
+#   - Standard_B2s      (2 vCPU, 4 GB)  - Staging
+#   - Standard_D2s_v3   (2 vCPU, 8 GB)
+#   - Standard_D4s_v3   (4 vCPU, 16 GB) - Production
+
+# ============================
+# Database Configuration
+# ============================
+
+# PostgreSQL instance class
+# AWS options:
+#   - db.t3.micro   (1 vCPU, 1 GB)   - $12/month - Development
+#   - db.t3.small   (1 vCPU, 2 GB)   - $25/month
+#   - db.t3.medium  (2 vCPU, 4 GB)   - $50/month - Staging
+#   - db.r5.large   (2 vCPU, 16 GB)  - $120/month - Production
+db_instance_class = "db.t3.medium"
+
+# Database storage in GB
+# Minimum: 20 GB
+# Staging: 100 GB
+# Production: 500+ GB
+db_allocated_storage = 100
+
+# Database name
+db_name = "marketing_agent"
+
+# Database admin username (avoid 'admin', 'root', 'postgres')
+db_username = "dbadmin"
+
+# Database password - SET VIA ENVIRONMENT VARIABLE IN PRODUCTION
+# export TF_VAR_db_password="YourSecurePassword123!"
+# db_password = "CHANGE_ME_IN_PRODUCTION"
+
+# ============================
+# Redis Cache Configuration
+# ============================
+
+# Redis instance type
+# AWS options:
+#   - cache.t3.micro   (0.5 GB) - $12/month - Development
+#   - cache.t3.small   (1.5 GB) - $25/month
+#   - cache.t3.medium  (3.2 GB) - $50/month - Staging
+#   - cache.m5.large   (6.4 GB) - $100/month - Production
+redis_node_type = "cache.t3.medium"
+
+# ============================
+# Monitoring & Observability
+# ============================
+# Enable/disable monitoring tools (true/false)
+
+# Prometheus & Grafana (open source, runs in cluster)
+enable_monitoring = true
+
+# Datadog (APM, metrics, logging) - Requires API key
+enable_datadog = false
+
+# New Relic (infrastructure & application monitoring) - Requires license key
+enable_newrelic = false
+
+# Sumologic (log aggregation & analytics) - Requires access credentials
+enable_sumologic = false
+
+# ============================
+# API Keys & Secrets
+# ============================
+# SECURITY WARNING: Never commit these values to Git!
+#
+# Recommended approaches:
+# 1. Environment variables (CI/CD):
+#    export TF_VAR_openai_api_key="sk-..."
+#
+# 2. Terraform Cloud variables:
+#    Set as sensitive workspace variables
+#
+# 3. AWS Secrets Manager / GCP Secret Manager / Azure Key Vault:
+#    Retrieve at runtime with data sources
+#
+# 4. Local only (development):
+#    Uncomment and set values (ensure terraform.tfvars in .gitignore)
+
+# OpenAI API Key (REQUIRED)
+# Get from: https://platform.openai.com/api-keys
+# openai_api_key = "sk-..."
+
+# Datadog API Key (Required if enable_datadog = true)
+# Get from: https://app.datadoghq.com/organization-settings/api-keys
+# datadog_api_key = "..."
+# datadog_app_key = "..."
+
+# New Relic License Key (Required if enable_newrelic = true)
+# Get from: https://one.newrelic.com/admin-portal/api-keys/home
+# newrelic_license_key = "..."
+
+# Sumologic Access Credentials (Required if enable_sumologic = true)
+# Get from: https://service.sumologic.com/ui/#/security/access-keys
+# sumologic_access_id  = "..."
+# sumologic_access_key = "..."
+
+# LangSmith API Key (Optional, for LLM tracing)
+# Get from: https://smith.langchain.com/settings
+# langsmith_api_key = "..."
+
+################################################################################
+# Environment-Specific Examples
+################################################################################
+
+# ================
+# DEVELOPMENT
+# ================
+# Minimal resources for local testing and debugging
+# Estimated cost: $100-150/month
+
+# environment          = "development"
+# node_count          = 1
+# node_instance_type  = "t3.medium"
+# db_instance_class   = "db.t3.micro"
+# db_allocated_storage = 20
+# redis_node_type     = "cache.t3.micro"
+# enable_monitoring   = false
+# enable_datadog      = false
+# enable_newrelic     = false
+
+# ================
+# STAGING
+# ================
+# Production-like environment for pre-release testing
+# Estimated cost: $450-600/month
+
+# environment          = "staging"
+# node_count          = 3
+# node_instance_type  = "t3.medium"
+# db_instance_class   = "db.t3.medium"
+# db_allocated_storage = 100
+# redis_node_type     = "cache.t3.medium"
+# enable_monitoring   = true
+# enable_datadog      = true
+# enable_newrelic     = false
+
+# ================
+# PRODUCTION
+# ================
+# High-availability, production-grade infrastructure
+# Estimated cost: $1,200-1,800/month
+
+# environment          = "production"
+# node_count          = 5
+# node_instance_type  = "t3.xlarge"    # or m5.xlarge for better performance
+# db_instance_class   = "db.r5.large"
+# db_allocated_storage = 500
+# redis_node_type     = "cache.m5.large"
+# enable_monitoring   = true
+# enable_datadog      = true
+# enable_newrelic     = true
+# enable_sumologic    = true
+
+################################################################################
+# Additional Configuration Notes
+################################################################################
+
+# Multi-Region Deployment:
+#   For disaster recovery, deploy to multiple regions:
+#   - Primary: us-east-1
+#   - DR: us-west-2
+#   Use Route 53 (AWS) or Traffic Manager (Azure) for failover
+
+# Auto-Scaling:
+#   Enable cluster autoscaling in the respective cloud provider:
+#   - AWS EKS: Cluster Autoscaler or Karpenter
+#   - GCP GKE: Built-in node autoprovisioning
+#   - Azure AKS: Cluster autoscaler
+
+# Cost Optimization:
+#   - Use Spot/Preemptible instances for non-production (70% savings)
+#   - Enable database autoscaling for variable workloads
+#   - Schedule staging shutdown during off-hours
+#   - Use Reserved Instances for production (40% savings)
+
+# Security Hardening:
+#   - Enable VPC Flow Logs
+#   - Implement network policies
+#   - Use private endpoints for databases
+#   - Enable audit logging
+#   - Rotate API keys regularly
+#   - Use least-privilege IAM roles
+
+# Backup & Disaster Recovery:
+#   - RDS automated backups: 7-day retention
+#   - Snapshot Kubernetes etcd daily
+#   - Export Terraform state regularly
+#   - Document recovery procedures
+#   - Test DR plan quarterly
+
+################################################################################
+# Quick Start Commands
+################################################################################
+
+# 1. Initialize Terraform
+#    terraform init
+
+# 2. Validate configuration
+#    terraform validate
+
+# 3. Preview changes
+#    terraform plan -out=tfplan
+
+# 4. Apply configuration
+#    terraform apply tfplan
+
+# 5. Get outputs
+#    terraform output
+#    terraform output -json > outputs.json
+
+# 6. Configure kubectl
+#    terraform output -raw kubeconfig_command | bash
+
+# 7. Verify deployment
+#    kubectl get nodes
+#    kubectl get pods --all-namespaces
+
+# 8. Destroy infrastructure (CAREFUL!)
+#    terraform destroy
+
+################################################################################
+# Support & Documentation
+################################################################################
+
+# Full documentation: infrastructure/terraform/README.md
+# Terraform setup guide: docs/TERRAFORM_SETUP.md
+# Cost optimization: docs/COST_OPTIMIZATION.md
+# Security best practices: docs/SECURITY.md
+# Troubleshooting: infrastructure/terraform/README.md#troubleshooting
+
+# Questions? Open an issue at:
+# https://github.com/your-org/marketing-agent/issues

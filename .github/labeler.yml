@@ -1,0 +1,44 @@
+# PR Labeler Configuration
+# Automatically label PRs based on changed files
+
+backend:
+  - 'src/**/*.py'
+  - 'tests/**/*.py'
+  - 'pyproject.toml'
+  - 'alembic.ini'
+
+frontend:
+  - 'frontend/**/*'
+
+documentation:
+  - 'docs/**/*'
+  - '**/*.md'
+  - 'README.md'
+
+infrastructure:
+  - 'infrastructure/**/*'
+  - 'docker-compose.yml'
+  - '.github/**/*'
+
+database:
+  - 'src/database/**/*'
+  - 'alembic/**/*'
+
+agent:
+  - 'src/agent/**/*'
+  - 'prompts/**/*'
+
+api:
+  - 'src/api/**/*'
+
+ci-cd:
+  - '.github/workflows/**/*'
+
+monitoring:
+  - 'monitoring/**/*'
+  - 'src/monitoring/**/*'
+
+dependencies:
+  - 'pyproject.toml'
+  - 'frontend/package.json'
+  - 'frontend/package-lock.json'

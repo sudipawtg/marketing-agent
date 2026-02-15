@@ -1,0 +1,85 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: marketing-agent-postgres
+    environment:
+      POSTGRES_DB: marketing_agent
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - marketing-agent-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: marketing-agent-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - marketing-agent-network
+
+  backend:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.backend
+    container_name: marketing-agent-backend
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/marketing_agent
+      REDIS_URL: redis://redis:6379
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ENVIRONMENT: development
+      LOG_LEVEL: DEBUG
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - marketing-agent-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../infrastructure/docker/Dockerfile.frontend
+    container_name: marketing-agent-frontend
+    environment:
+      VITE_API_URL: http://localhost:8000
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - marketing-agent-network
+    restart: unless-stopped
+
+networks:
+  marketing-agent-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,230 @@
+name: AI Evaluation
+
+on:
+  # Run on pull requests
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'src/**'
+      - 'prompts/**'
+      - 'evaluation/datasets/**'
+  
+  # Run on main branch pushes
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'prompts/**'
+  
+  # Run on schedule (daily at 2 AM UTC)
+  schedule:
+    - cron: '0 2 * * *'
+  
+  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: 'Dataset to evaluate (or "all" for all datasets)'
+        required: false
+        default: 'all'
+      enable_tracing:
+        description: 'Enable LangSmith tracing'
+        required: false
+        default: 'true'
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  evaluate:
+    name: Run AI Evaluation
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,evaluation]"
+      
+      - name: Create results directory
+        run: mkdir -p evaluation/results
+      
+      - name: Run evaluation on campaign optimization dataset
+        env:
+          LANGCHAIN_API_KEY: ${{ secrets.LANGCHAIN_API_KEY }}
+          LANGCHAIN_TRACING_V2: ${{ github.event.inputs.enable_tracing || 'true' }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python scripts/run_evaluation.py campaign_optimization \
+            --output-dir evaluation/results
+      
+      - name: Run evaluation on creative performance dataset
+        env:
+          LANGCHAIN_API_KEY: ${{ secrets.LANGCHAIN_API_KEY }}
+          LANGCHAIN_TRACING_V2: ${{ github.event.inputs.enable_tracing || 'true' }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python scripts/run_evaluation.py creative_performance \
+            --output-dir evaluation/results
+      
+      - name: Generate evaluation report
+        run: |
+          python scripts/generate_evaluation_report.py \
+            --results-dir evaluation/results \
+            --output-dir evaluation/reports
+      
+      - name: Upload evaluation results
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-results-${{ github.sha }}
+          path: evaluation/results/
+          retention-days: 30
+      
+      - name: Upload evaluation reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: evaluation-reports-${{ github.sha }}
+          path: evaluation/reports/
+          retention-days: 30
+      
+      - name: Check evaluation thresholds
+        run: |
+          python scripts/check_evaluation_thresholds.py \
+            --results-dir evaluation/results \
+            --min-pass-rate 0.85 \
+            --min-relevance 0.70 \
+            --min-accuracy 0.70 \
+            --min-completeness 0.80 \
+            --min-coherence 0.70 \
+            --min-safety 1.00
+      
+      - name: Comment PR with evaluation results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const reportPath = 'evaluation/reports/summary.md';
+            
+            if (fs.existsSync(reportPath)) {
+              const report = fs.readFileSync(reportPath, 'utf8');
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: `## 🤖 AI Evaluation Results\n\n${report}`
+              });
+            }
+  
+  benchmark:
+    name: Run Performance Benchmarks
+    runs-on: ubuntu-latest
+    needs: evaluate
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,evaluation]"
+      
+      - name: Run performance benchmarks
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python scripts/run_benchmarks.py \
+            --output-dir evaluation/benchmarks \
+            --iterations 10
+      
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.sha }}
+          path: evaluation/benchmarks/
+          retention-days: 30
+      
+      - name: Compare with baseline
+        run: |
+          python scripts/compare_benchmarks.py \
+            --current evaluation/benchmarks/latest.json \
+            --baseline evaluation/benchmarks/baseline.json \
+            --max-regression 0.10
+  
+  regression-check:
+    name: Check for Regressions
+    runs-on: ubuntu-latest
+    needs: [evaluate, benchmark]
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,evaluation]"
+      
+      - name: Download evaluation results
+        uses: actions/download-artifact@v4
+        with:
+          name: evaluation-results-${{ github.sha }}
+          path: evaluation/results/current
+      
+      - name: Get base branch results
+        run: |
+          git checkout origin/${{ github.base_ref }}
+          mkdir -p evaluation/results/baseline
+          # Copy or retrieve baseline results
+          # This would typically pull from a stored location
+      
+      - name: Compare evaluation results
+        run: |
+          python scripts/compare_evaluations.py \
+            --current evaluation/results/current \
+            --baseline evaluation/results/baseline \
+            --output evaluation/reports/regression-analysis.md
+      
+      - name: Comment regression analysis
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const reportPath = 'evaluation/reports/regression-analysis.md';
+            
+            if (fs.existsSync(reportPath)) {
+              const report = fs.readFileSync(reportPath, 'utf8');
+              
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: `## 📊 Regression Analysis\n\n${report}`
+              });
+            }

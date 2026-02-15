@@ -1,0 +1,75 @@
+# Git
+.git
+.gitignore
+.github
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+dist
+build
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Node modules (if in root)
+node_modules/
+
+# Frontend build (if in root)
+frontend/dist
+frontend/node_modules
+
+# Misc
+.DS_Store
+*.bak
+*.tmp
+.history/
+
+# Evaluation and test data
+evaluation/
+test_data/
+notebooks/
+
+# Infrastructure files
+infrastructure/k8s/
+infrastructure/terraform/
+docker-compose.yml

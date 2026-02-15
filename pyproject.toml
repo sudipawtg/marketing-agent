@@ -1,0 +1,97 @@
+[project]
+name = "marketing-agent"
+version = "0.1.0"
+description = "Marketing Reasoning Agent for Campaign Optimization"
+requires-python = ">=3.11"
+authors = [
+    {name = "Sudip Kandel", email = "sudip@example.com"}
+]
+
+dependencies = [
+    # Agent framework
+    "langchain>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "langchain-anthropic>=0.2.0",
+    "langgraph>=0.2.0",
+    "langsmith>=0.2.0",
+    
+    # API framework
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    
+    # Database
+    "sqlalchemy>=2.0.35",
+    "alembic>=1.13.0",
+    "aiosqlite>=0.19.0",  # SQLite async driver (simpler than PostgreSQL)
+    
+    # Caching
+    "redis>=5.2.0",
+    
+    # Monitoring
+    "prometheus-client>=0.21.0",
+    "sentry-sdk>=2.17.0",
+    
+    # HTTP clients
+    "httpx>=0.27.0",
+    "requests>=2.32.0",
+    
+    # Utilities
+    "python-dotenv>=1.0.0",
+    "structlog>=24.4.0",
+    "python-json-logger>=3.2.1",
+    "tenacity>=9.0.0",
+    "pyyaml>=6.0.2",
+    
+    # CLI/Demo
+    "rich>=13.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "black>=24.10.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+]
+evaluation = [
+    # Evaluation framework
+    "langsmith>=0.2.0",
+    "prometheus-client>=0.21.0",
+    
+    # Reporting
+    "jinja2>=3.1.0",
+    "tabulate>=0.9.0",
+    
+    # Analysis
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false

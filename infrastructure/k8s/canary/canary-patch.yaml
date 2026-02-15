@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: marketing-agent-backend
+  labels:
+    version: canary
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        version: canary
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: marketing-agent-backend-canary
+spec:
+  selector:
+    app: marketing-agent
+    component: backend
+    version: canary
+  ports:
+    - port: 8000
+      targetPort: http

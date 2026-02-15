@@ -1,0 +1,573 @@
+// Jenkins Pipeline for Marketing Agent
+// Demonstrates CI/CD with Jenkins for AI applications
+
+pipeline {
+    agent {
+        kubernetes {
+            yaml """
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: marketing-agent-build
+spec:
+  serviceAccountName: jenkins
+  containers:
+  - name: python
+    image: python:3.11-slim
+    command:
+    - cat
+    tty: true
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "500m"
+      limits:
+        memory: "2Gi"
+        cpu: "1000m"
+  - name: docker
+    image: docker:24-dind
+    command:
+    - dockerd
+    - --host=unix:///var/run/docker.sock
+    - --host=tcp://0.0.0.0:2375
+    securityContext:
+      privileged: true
+    volumeMounts:
+    - name: docker-sock
+      mountPath: /var/run
+  - name: kubectl
+    image: bitnami/kubectl:latest
+    command:
+    - cat
+    tty: true
+  volumes:
+  - name: docker-sock
+    emptyDir: {}
+"""
+        }
+    }
+
+    environment {
+        // Container Registry
+        ECR_REGISTRY = credentials('ecr-registry-url')
+        IMAGE_NAME = 'marketing-agent'
+        IMAGE_TAG = "${env.GIT_COMMIT.take(8)}"
+        
+        // AWS Credentials
+        AWS_CREDENTIALS = credentials('aws-credentials')
+        AWS_REGION = 'us-east-1'
+        
+        // API Keys (secured in Jenkins)
+        OPENAI_API_KEY = credentials('openai-api-key')
+        LANGSMITH_API_KEY = credentials('langsmith-api-key')
+        
+        // Monitoring
+        DATADOG_API_KEY = credentials('datadog-api-key')
+        NEWRELIC_LICENSE_KEY = credentials('newrelic-license-key')
+        
+        // Database
+        DATABASE_URL = credentials('database-url')
+        REDIS_URL = credentials('redis-url')
+        
+        // Environment
+        ENVIRONMENT = "${env.BRANCH_NAME == 'main' ? 'production' : env.BRANCH_NAME == 'staging' ? 'staging' : 'development'}"
+        
+        // Python virtual environment
+        VIRTUAL_ENV = "${env.WORKSPACE}/venv"
+        PATH = "${env.VIRTUAL_ENV}/bin:${env.PATH}"
+    }
+
+    options {
+        // Keep last 30 builds
+        buildDiscarder(logRotator(numToKeepStr: '30'))
+        
+        // Timeout after 1 hour
+        timeout(time: 1, unit: 'HOURS')
+        
+        // Timestamps in console output
+        timestamps()
+        
+        // Skip default checkout
+        skipDefaultCheckout()
+        
+        // Disable concurrent builds
+        disableConcurrentBuilds()
+    }
+
+    triggers {
+        // Poll SCM every 5 minutes
+        pollSCM('H/5 * * * *')
+        
+        // Cron trigger for nightly builds
+        cron(env.BRANCH_NAME == 'main' ? 'H 2 * * *' : '')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                
+                script {
+                    env.GIT_COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
+                    
+                    env.GIT_AUTHOR = sh(
+                        script: 'git log -1 --pretty=format:"%an"',
+                        returnStdout: true
+                    ).trim()
+                }
+                
+                echo "Building commit: ${env.GIT_COMMIT_SHORT}"
+                echo "Author: ${env.GIT_AUTHOR}"
+            }
+        }
+
+        stage('Setup Environment') {
+            steps {
+                container('python') {
+                    sh '''
+                        python -m venv ${VIRTUAL_ENV}
+                        pip install --upgrade pip setuptools wheel
+                        pip install -e ".[dev]"
+                        pip install pytest pytest-cov pytest-asyncio black flake8 mypy
+                    '''
+                }
+            }
+        }
+
+        stage('Code Quality') {
+            parallel {
+                stage('Linting') {
+                    steps {
+                        container('python') {
+                            sh '''
+                                echo "Running black formatter check..."
+                                black --check src/ tests/
+                                
+                                echo "Running flake8 linter..."
+                                flake8 src/ tests/ --max-line-length=100 --extend-ignore=E203,W503
+                            '''
+                        }
+                    }
+                }
+                
+                stage('Type Checking') {
+                    steps {
+                        container('python') {
+                            sh '''
+                                echo "Running mypy type checker..."
+                                mypy src/ --ignore-missing-imports --strict
+                            '''
+                        }
+                    }
+                }
+                
+                stage('Security Scan') {
+                    steps {
+                        container('python') {
+                            sh '''
+                                echo "Running security scan..."
+                                pip install bandit safety
+                                bandit -r src/ -f json -o bandit-report.json || true
+                                safety check --json > safety-report.json || true
+                            '''
+                        }
+                    }
+                    post {
+                        always {
+                            archiveArtifacts artifacts: '*-report.json', allowEmptyArchive: true
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Unit Tests') {
+            steps {
+                container('python') {
+                    sh '''
+                        echo "Running unit tests with coverage..."
+                        pytest tests/unit/ \
+                            --verbose \
+                            --cov=src \
+                            --cov-report=html:coverage-report \
+                            --cov-report=xml:coverage.xml \
+                            --cov-report=term \
+                            --junit-xml=test-results.xml
+                    '''
+                }
+            }
+            post {
+                always {
+                    junit 'test-results.xml'
+                    publishHTML([
+                        reportDir: 'coverage-report',
+                        reportFiles: 'index.html',
+                        reportName: 'Coverage Report'
+                    ])
+                    
+                    // Send to SonarQube (if configured)
+                    script {
+                        if (env.SONARQUBE_URL) {
+                            sh '''
+                                sonar-scanner \
+                                    -Dsonar.projectKey=marketing-agent \
+                                    -Dsonar.sources=src \
+                                    -Dsonar.tests=tests \
+                                    -Dsonar.python.coverage.reportPaths=coverage.xml
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('AI Evaluation Tests') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'staging'
+                    changeRequest()
+                }
+            }
+            steps {
+                container('python') {
+                    sh '''
+                        echo "Running AI evaluation against golden datasets..."
+                        python scripts/run_evaluation.py \
+                            --dataset evaluation/datasets/golden/campaign_optimization.json \
+                            --dataset evaluation/datasets/golden/creative_performance.json \
+                            --output evaluation/results/jenkins-${BUILD_NUMBER}.json \
+                            --format json
+                        
+                        echo "Checking evaluation thresholds..."
+                        python scripts/check_evaluation_thresholds.py \
+                            evaluation/results/jenkins-${BUILD_NUMBER}.json
+                        
+                        echo "Generating evaluation report..."
+                        python scripts/generate_evaluation_report.py \
+                            evaluation/results/jenkins-${BUILD_NUMBER}.json \
+                            --output evaluation/reports/jenkins-${BUILD_NUMBER}.html
+                    '''
+                }
+            }
+            post {
+                always {
+                    publishHTML([
+                        reportDir: 'evaluation/reports',
+                        reportFiles: "jenkins-${BUILD_NUMBER}.html",
+                        reportName: 'AI Evaluation Report'
+                    ])
+                }
+                failure {
+                    script {
+                        // Post to Slack/Teams if evaluation fails
+                        if (env.SLACK_WEBHOOK) {
+                            sh """
+                                curl -X POST ${env.SLACK_WEBHOOK} \
+                                    -H 'Content-Type: application/json' \
+                                    -d '{
+                                        "text": "⚠️ AI Evaluation Failed",
+                                        "attachments": [{
+                                            "color": "danger",
+                                            "fields": [
+                                                {"title": "Build", "value": "${BUILD_NUMBER}", "short": true},
+                                                {"title": "Branch", "value": "${BRANCH_NAME}", "short": true},
+                                                {"title": "Author", "value": "${GIT_AUTHOR}", "short": true},
+                                                {"title": "URL", "value": "${BUILD_URL}", "short": false}
+                                            ]
+                                        }]
+                                    }'
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Build Docker Images') {
+            steps {
+                container('docker') {
+                    sh '''
+                        echo "Building backend image..."
+                        docker build \
+                            --target production \
+                            --build-arg ENVIRONMENT=${ENVIRONMENT} \
+                            --tag ${ECR_REGISTRY}/${IMAGE_NAME}-backend:${IMAGE_TAG} \
+                            --tag ${ECR_REGISTRY}/${IMAGE_NAME}-backend:latest \
+                            --file infrastructure/docker/Dockerfile.backend \
+                            .
+                        
+                        echo "Building frontend image..."
+                        docker build \
+                            --target production \
+                            --build-arg VITE_API_URL=/api \
+                            --tag ${ECR_REGISTRY}/${IMAGE_NAME}-frontend:${IMAGE_TAG} \
+                            --tag ${ECR_REGISTRY}/${IMAGE_NAME}-frontend:latest \
+                            --file infrastructure/docker/Dockerfile.frontend \
+                            .
+                    '''
+                }
+            }
+        }
+
+        stage('Image Security Scan') {
+            steps {
+                container('docker') {
+                    sh '''
+                        echo "Scanning images with Trivy..."
+                        docker run --rm \
+                            -v /var/run/docker.sock:/var/run/docker.sock \
+                            aquasec/trivy:latest image \
+                            --severity HIGH,CRITICAL \
+                            --format json \
+                            --output trivy-backend.json \
+                            ${ECR_REGISTRY}/${IMAGE_NAME}-backend:${IMAGE_TAG} || true
+                        
+                        docker run --rm \
+                            -v /var/run/docker.sock:/var/run/docker.sock \
+                            aquasec/trivy:latest image \
+                            --severity HIGH,CRITICAL \
+                            --format json \
+                            --output trivy-frontend.json \
+                            ${ECR_REGISTRY}/${IMAGE_NAME}-frontend:${IMAGE_TAG} || true
+                    '''
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'trivy-*.json', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Push Images') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'staging'
+                }
+            }
+            steps {
+                container('docker') {
+                    sh '''
+                        echo "Logging into ECR..."
+                        aws ecr get-login-password --region ${AWS_REGION} | \
+                            docker login --username AWS --password-stdin ${ECR_REGISTRY}
+                        
+                        echo "Pushing backend image..."
+                        docker push ${ECR_REGISTRY}/${IMAGE_NAME}-backend:${IMAGE_TAG}
+                        docker push ${ECR_REGISTRY}/${IMAGE_NAME}-backend:latest
+                        
+                        echo "Pushing frontend image..."
+                        docker push ${ECR_REGISTRY}/${IMAGE_NAME}-frontend:${IMAGE_TAG}
+                        docker push ${ECR_REGISTRY}/${IMAGE_NAME}-frontend:latest
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'staging'
+                }
+            }
+            steps {
+                container('kubectl') {
+                    sh '''
+                        echo "Configuring kubectl..."
+                        aws eks update-kubeconfig --region ${AWS_REGION} --name marketing-agent-cluster
+                        
+                        echo "Deploying to ${ENVIRONMENT}..."
+                        cd infrastructure/k8s/${ENVIRONMENT}
+                        kustomize edit set image \
+                            backend=${ECR_REGISTRY}/${IMAGE_NAME}-backend:${IMAGE_TAG} \
+                            frontend=${ECR_REGISTRY}/${IMAGE_NAME}-frontend:${IMAGE_TAG}
+                        
+                        kubectl apply -k .
+                        
+                        echo "Waiting for rollout to complete..."
+                        kubectl rollout status deployment/marketing-agent-backend -n ${ENVIRONMENT} --timeout=5m
+                        kubectl rollout status deployment/marketing-agent-frontend -n ${ENVIRONMENT} --timeout=5m
+                        
+                        echo "Deployment successful!"
+                    '''
+                }
+            }
+            post {
+                success {
+                    script {
+                        // Send success notification
+                        if (env.SLACK_WEBHOOK) {
+                            sh """
+                                curl -X POST ${env.SLACK_WEBHOOK} \
+                                    -H 'Content-Type: application/json' \
+                                    -d '{
+                                        "text": "✅ Deployment Successful",
+                                        "attachments": [{
+                                            "color": "good",
+                                            "fields": [
+                                                {"title": "Environment", "value": "${ENVIRONMENT}", "short": true},
+                                                {"title": "Build", "value": "${BUILD_NUMBER}", "short": true},
+                                                {"title": "Commit", "value": "${GIT_COMMIT_SHORT}", "short": true},
+                                                {"title": "Author", "value": "${GIT_AUTHOR}", "short": true}
+                                            ]
+                                        }]
+                                    }'
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Integration Tests') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'staging'
+                }
+            }
+            steps {
+                container('python') {
+                    sh '''
+                        echo "Running integration tests against ${ENVIRONMENT}..."
+                        
+                        # Get service URL
+                        export API_URL=$(kubectl get service marketing-agent-backend -n ${ENVIRONMENT} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+                        
+                        pytest tests/integration/ \
+                            --base-url=https://${API_URL} \
+                            --verbose \
+                            --junit-xml=integration-results.xml
+                    '''
+                }
+            }
+            post {
+                always {
+                    junit 'integration-results.xml'
+                }
+            }
+        }
+
+        stage('Performance Tests') {
+            when {
+                branch 'main'
+            }
+            steps {
+                container('python') {
+                    sh '''
+                        echo "Running performance tests..."
+                        pip install locust
+                        
+                        export API_URL=$(kubectl get service marketing-agent-backend -n ${ENVIRONMENT} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+                        
+                        locust \
+                            --headless \
+                            --users 100 \
+                            --spawn-rate 10 \
+                            --run-time 5m \
+                            --host https://${API_URL} \
+                            --html performance-report.html \
+                            --csv performance-results
+                    '''
+                }
+            }
+            post {
+                always {
+                    publishHTML([
+                        reportDir: '.',
+                        reportFiles: 'performance-report.html',
+                        reportName: 'Performance Test Report'
+                    ])
+                }
+            }
+        }
+
+        stage('Tag Release') {
+            when {
+                branch 'main'
+            }
+            steps {
+                script {
+                    def version = sh(
+                        script: 'python -c "import tomli; print(tomli.load(open(\'pyproject.toml\', \'rb\'))[\'project\'][\'version\'])"',
+                        returnStdout: true
+                    ).trim()
+                    
+                    sh """
+                        git tag -a v${version}-${BUILD_NUMBER} -m "Release v${version} build ${BUILD_NUMBER}"
+                        git push origin v${version}-${BUILD_NUMBER}
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Clean workspace
+            cleanWs(
+                deleteDirs: true,
+                patterns: [
+                    [pattern: 'venv/**', type: 'INCLUDE'],
+                    [pattern: '**/__pycache__/**', type: 'INCLUDE'],
+                    [pattern: '**/*.pyc', type: 'INCLUDE']
+                ]
+            )
+            
+            // Send Datadog metrics
+            script {
+                if (env.DATADOG_API_KEY) {
+                    def status = currentBuild.result ?: 'SUCCESS'
+                    sh """
+                        curl -X POST 'https://api.datadoghq.com/api/v1/series?api_key=${DATADOG_API_KEY}' \
+                            -H 'Content-Type: application/json' \
+                            -d '{
+                                "series": [{
+                                    "metric": "jenkins.build",
+                                    "points": [[$(date +%s), 1]],
+                                    "type": "count",
+                                    "tags": [
+                                        "environment:${ENVIRONMENT}",
+                                        "branch:${BRANCH_NAME}",
+                                        "status:${status}",
+                                        "service:marketing-agent"
+                                    ]
+                                }]
+                            }'
+                    """
+                }
+            }
+        }
+        
+        failure {
+            script {
+                // Send failure notification
+                if (env.SLACK_WEBHOOK) {
+                    sh """
+                        curl -X POST ${env.SLACK_WEBHOOK} \
+                            -H 'Content-Type: application/json' \
+                            -d '{
+                                "text": "❌ Build Failed",
+                                "attachments": [{
+                                    "color": "danger",
+                                    "fields": [
+                                        {"title": "Build", "value": "${BUILD_NUMBER}", "short": true},
+                                        {"title": "Branch", "value": "${BRANCH_NAME}", "short": true},
+                                        {"title": "Stage", "value": "${STAGE_NAME}", "short": true},
+                                        {"title": "URL", "value": "${BUILD_URL}", "short": false}
+                                    ]
+                                }]
+                            }'
+                    """
+                }
+            }
+        }
+    }
+}

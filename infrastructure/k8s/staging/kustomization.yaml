@@ -1,0 +1,26 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: staging
+
+namePrefix: staging-
+
+bases:
+  - ../base
+
+patchesStrategicMerge:
+  - replicas-patch.yaml
+  - ingress-patch.yaml
+
+configMapGenerator:
+  - name: marketing-agent-config
+    behavior: merge
+    literals:
+      - ENVIRONMENT=staging
+      - LOG_LEVEL=DEBUG
+
+images:
+  - name: ghcr.io/your-org/marketing-agent-backend
+    newTag: staging-latest
+  - name: ghcr.io/your-org/marketing-agent-frontend
+    newTag: staging-latest

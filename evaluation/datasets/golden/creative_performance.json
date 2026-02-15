@@ -1,0 +1,192 @@
+{
+  "dataset_name": "creative_performance_golden_set",
+  "version": "1.0.0",
+  "description": "Golden dataset for evaluating creative performance analysis and recommendations",
+  "created_at": "2026-02-15T00:00:00Z",
+  "metadata": {
+    "domain": "marketing",
+    "use_case": "creative_optimization",
+    "evaluation_criteria": [
+      "relevance",
+      "actionability",
+      "insight_quality",
+      "coherence"
+    ]
+  },
+  "test_cases": [
+    {
+      "id": "creative_001" ,
+      "name": "Creative Fatigue Detection",
+      "description": "Detect creative fatigue and recommend refreshes",
+      "input": {
+        "creative_id": "CREATIVE_001",
+        "campaign_id": "CAMP_001",
+        "creative_data": {
+          "type": "image_ad",
+          "days_live": 45,
+          "impressions": 1000000,
+          "clicks": 30000,
+          "initial_ctr": 0.04,
+          "current_ctr": 0.02,
+          "ctr_decline": 0.50,
+          "engagement_score": 0.35
+        },
+        "performance_history": [
+          {"day": 1, "ctr": 0.04, "engagement": 0.8},
+          {"day": 15, "ctr": 0.035, "engagement": 0.65},
+          {"day": 30, "ctr": 0.025, "engagement": 0.45},
+          {"day": 45, "ctr": 0.02, "engagement": 0.35}
+        ],
+        "signals": [
+          {
+            "type": "creative_fatigue",
+            "metric": "ctr_decline",
+            "value": 0.50,
+            "threshold": 0.30,
+            "severity": "high"
+          }
+        ]
+      },
+      "expected_output": {
+        "recommendations": [
+          {
+            "type": "creative_refresh",
+            "priority": "high",
+            "action": "Replace creative with new variation immediately"
+          },
+          {
+            "type": "testing_strategy",
+            "priority": "medium",
+            "action": "Implement rotating creative strategy"
+          }
+        ],
+        "insights": [
+          "CTR has declined 50% from initial performance",
+          "Creative fatigue threshold exceeded",
+          "Engagement score indicates audience saturation"
+        ],
+        "confidence": 0.92,
+        "keywords": ["fatigue", "refresh", "decline", "creative"],
+        "recommendation_types": ["creative_refresh", "testing_strategy"]
+      }
+    },
+    {
+      "id": "creative_002",
+      "name": "High Performing Creative - Scaling", 
+      "description": "Identify winning creative for scaling",
+      "input": {
+        "creative_id": "CREATIVE_002",
+        "campaign_id": "CAMP_002",
+        "creative_data": {
+          "type": "video_ad",
+          "days_live": 14,
+          "impressions": 500000,
+          "clicks": 25000,
+          "views": 400000,
+          "current_ctr": 0.05,
+          "view_rate": 0.80,
+          "engagement_score": 0.85,
+          "conversion_rate": 0.04
+        },
+        "signals": [
+          {
+            "type": "performance",
+            "metric": "ctr",
+            "value": 0.05,
+            "benchmark": 0.03,
+            "severity": "positive"
+          },
+          {
+            "type": "engagement",
+            "metric": "view_rate",
+            "value": 0.80,
+            "benchmark": 0.60,
+            "severity": "positive"
+          }
+        ]
+      },
+      "expected_output": {
+        "recommendations": [
+          {
+            "type": "scale_creative",
+            "priority": "high",
+            "action": "Increase budget allocation to this creative by 100%"
+          },
+          {
+            "type": "variant_testing",
+            "priority": "medium",
+            "action": "Create similar variations based on winning elements"
+          }
+        ],
+        "insights": [
+          "CTR exceeds benchmark by 67%",
+          "View rate indicates strong engagement",
+          "High conversion rate validates creative effectiveness"
+        ],
+        "confidence": 0.95,
+        "keywords": ["high performing", "scale", "engagement", "conversion"],
+        "recommendation_types": ["scale_creative", "variant_testing"]
+      }
+    },
+    {
+      "id": "creative_003",
+      "name": "A/B Test Analysis - Clear Winner",
+      "description": "Analyze A/B test results and declare winner",
+      "input": {
+        "test_id": "TEST_001",
+        "campaign_id": "CAMP_003",
+        "variants": {
+          "variant_a": {
+            "creative_id": "CREATIVE_003A",
+            "impressions": 100000,
+            "clicks": 3000,
+            "conversions": 90,
+            "ctr": 0.03,
+            "conversion_rate": 0.03,
+            "cost_per_conversion": 100
+          },
+          "variant_b": {
+            "creative_id": "CREATIVE_003B",
+            "impressions": 100000,
+            "clicks": 4500,
+            "conversions": 180,
+            "ctr": 0.045,
+            "conversion_rate": 0.04,
+            "cost_per_conversion": 67
+          }
+        },
+        "signals": [
+          {
+            "type": "ab_test",
+            "metric": "statistical_significance",
+            "value": 0.95,
+            "winner": "variant_b",
+            "lift": 0.50
+          }
+        ]
+      },
+      "expected_output": {
+        "recommendations": [
+          {
+            "type": "implement_winner",
+            "priority": "high",
+            "action": "Implement Variant B across all campaigns"
+          },
+          {
+            "type": "discontinue_loser",
+            "priority": "high",
+            "action": "Phase out Variant A immediately"
+          }
+        ],
+        "insights": [
+          "Variant B shows 50% lift in CTR with 95% confidence",
+          "Cost per conversion 33% lower for Variant B",
+          "Statistical significance achieved"
+        ],
+        "confidence": 0.95,
+        "keywords": ["ab test", "winner", "statistical significance", "lift"],
+        "recommendation_types": ["implement_winner", "discontinue_loser"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,571 @@
+# Buildkite Pipeline for Marketing Agent
+# Modern CI/CD with dynamic parallelism and agent targeting
+
+agents:
+  queue: "default"
+
+env:
+  # Container Registry
+  ECR_REGISTRY: "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+  IMAGE_NAME: "marketing-agent"
+  
+  # Monitoring
+  DATADOG_SITE: "datadoghq.com"
+  
+  # Python settings
+  PYTHONUNBUFFERED: "1"
+  PIP_NO_CACHE_DIR: "1"
+
+steps:
+  # Pre-flight checks
+  - label: ":rocket: Setup"
+    key: "setup"
+    command: |
+      echo "--- Setting up environment"
+      echo "Branch: ${BUILDKITE_BRANCH}"
+      echo "Commit: ${BUILDKITE_COMMIT:0:8}"
+      echo "Build: ${BUILDKITE_BUILD_NUMBER}"
+      
+      # Determine environment
+      if [[ "${BUILDKITE_BRANCH}" == "main" ]]; then
+        export ENVIRONMENT="production"
+      elif [[ "${BUILDKITE_BRANCH}" == "staging" ]]; then
+        export ENVIRONMENT="staging"
+      else
+        export ENVIRONMENT="development"
+      fi
+      
+      buildkite-agent meta-data set "environment" "${ENVIRONMENT}"
+      buildkite-agent meta-data set "image_tag" "${BUILDKITE_COMMIT:0:8}"
+    agents:
+      queue: "default"
+
+  - wait
+
+  # Backend Pipeline
+  - label: ":python: Lint Backend"
+    key: "lint-backend"
+    command: |
+      echo "--- Installing dependencies"
+      python -m venv venv
+      . venv/bin/activate
+      pip install --upgrade pip
+      pip install -e ".[dev]"
+      pip install black flake8 mypy isort pylint
+      
+      echo "--- Running Black formatter"
+      black --check src/ tests/
+      
+      echo "--- Running Flake8 linter"
+      flake8 src/ tests/ --max-line-length=100 --extend-ignore=E203,W503
+      
+      echo "--- Running isort"
+      isort --check-only src/ tests/
+      
+      echo "--- Running pylint"
+      pylint src/ --disable=C0111,C0103,W0511
+    plugins:
+      - docker#v5.8.0:
+          image: "python:3.11-slim"
+          workdir: /app
+          volumes:
+            - ".:/app"
+    agents:
+      queue: "cpu-optimized"
+
+  - label: ":mag: Type Check Backend"
+    key: "type-check-backend"
+    command: |
+      echo "--- Installing dependencies"
+      python -m venv venv
+      . venv/bin/activate
+      pip install -e ".[dev]"
+      pip install mypy types-requests types-redis types-aiohttp
+      
+      echo "--- Running mypy"
+      mypy src/ --ignore-missing-imports --strict --html-report mypy-report
+      
+      echo "--- Uploading report"
+      buildkite-agent artifact upload "mypy-report/**/*"
+    plugins:
+      - docker#v5.8.0:
+          image: "python:3.11-slim"
+          workdir: /app
+          volumes:
+            - ".:/app"
+    agents:
+      queue: "cpu-optimized"
+
+  - label: ":test_tube: Unit Tests"
+    key: "unit-tests"
+    parallelism: 4
+    command: |
+      echo "--- Installing dependencies"
+      python -m venv venv
+      . venv/bin/activate
+      pip install -e ".[dev]"
+      pip install pytest pytest-cov pytest-asyncio pytest-xdist pytest-split
+      
+      echo "--- Running tests (split ${BUILDKITE_PARALLEL_JOB}/${BUILDKITE_PARALLEL_JOB_COUNT})"
+      pytest tests/unit/ \
+        --splits ${BUILDKITE_PARALLEL_JOB_COUNT} \
+        --group ${BUILDKITE_PARALLEL_JOB} \
+        --verbose \
+        --cov=src \
+        --cov-report=html:coverage-report-${BUILDKITE_PARALLEL_JOB} \
+        --cov-report=xml:coverage-${BUILDKITE_PARALLEL_JOB}.xml \
+        --junit-xml=test-results-${BUILDKITE_PARALLEL_JOB}.xml
+      
+      echo "--- Uploading artifacts"
+      buildkite-agent artifact upload "coverage-*.xml"
+      buildkite-agent artifact upload "test-results-*.xml"
+      buildkite-agent artifact upload "coverage-report-*/**/*"
+    plugins:
+      - docker#v5.8.0:
+          image: "python:3.11-slim"
+          workdir: /app
+          volumes:
+            - ".:/app"
+          environment:
+            - "DATABASE_URL=postgresql://postgres:postgres@db:5432/test"
+            - "REDIS_URL=redis://redis:6379/0"
+      - docker-compose#v4.14.0:
+          run: app
+          config: docker-compose.test.yml
+    agents:
+      queue: "cpu-optimized"
+
+  - label: ":robot_face: AI Evaluation"
+    key: "ai-evaluation"
+    command: |
+      echo "--- Installing dependencies"
+      python -m venv venv
+      . venv/bin/activate
+      pip install -e ".[dev]"
+      
+      echo "--- Running AI evaluation"
+      python scripts/run_evaluation.py \
+        --dataset evaluation/datasets/golden/campaign_optimization.json \
+        --dataset evaluation/datasets/golden/creative_performance.json \
+        --output evaluation/results/buildkite-${BUILDKITE_BUILD_NUMBER}.json \
+        --format json
+      
+      echo "--- Checking thresholds"
+      python scripts/check_evaluation_thresholds.py \
+        evaluation/results/buildkite-${BUILDKITE_BUILD_NUMBER}.json
+      
+      echo "--- Generating report"
+      python scripts/generate_evaluation_report.py \
+        evaluation/results/buildkite-${BUILDKITE_BUILD_NUMBER}.json \
+        --output evaluation/reports/buildkite-${BUILDKITE_BUILD_NUMBER}.html
+      
+      echo "--- Uploading results"
+      buildkite-agent artifact upload "evaluation/results/*"
+      buildkite-agent artifact upload "evaluation/reports/*"
+      
+      # Post to Slack if available
+      if [[ -n "${SLACK_WEBHOOK_URL}" ]]; then
+        EVAL_SCORE=$(jq -r '.summary.average_score' evaluation/results/buildkite-${BUILDKITE_BUILD_NUMBER}.json)
+        curl -X POST "${SLACK_WEBHOOK_URL}" \
+          -H 'Content-Type: application/json' \
+          -d "{
+            \"text\": \":robot_face: AI Evaluation Complete\",
+            \"attachments\": [{
+              \"color\": \"good\",
+              \"fields\": [
+                {\"title\": \"Score\", \"value\": \"${EVAL_SCORE}\", \"short\": true},
+                {\"title\": \"Build\", \"value\": \"${BUILDKITE_BUILD_NUMBER}\", \"short\": true},
+                {\"title\": \"Branch\", \"value\": \"${BUILDKITE_BRANCH}\", \"short\": true}
+              ]
+            }]
+          }"
+      fi
+    plugins:
+      - docker#v5.8.0:
+          image: "python:3.11-slim"
+          workdir: /app
+          volumes:
+            - ".:/app"
+          environment:
+            - "OPENAI_API_KEY"
+            - "LANGSMITH_API_KEY"
+    agents:
+      queue: "gpu-enabled"  # Use GPU for faster LLM inference
+    retry:
+      automatic:
+        - exit_status: "*"
+          limit: 2
+
+  - label: ":shield: Security Scan"
+    key: "security-scan"
+    command: |
+      echo "--- Installing security tools"
+      python -m venv venv
+      . venv/bin/activate
+      pip install bandit safety pip-audit semgrep
+      
+      echo "--- Running Bandit"
+      bandit -r src/ -f json -o bandit-report.json || true
+      
+      echo "--- Running Safety"
+      safety check --json > safety-report.json || true
+      
+      echo "--- Running pip-audit"
+      pip-audit --format json --output pip-audit-report.json || true
+      
+      echo "--- Running Semgrep"
+      semgrep --config=auto src/ --json -o semgrep-report.json || true
+      
+      echo "--- Uploading reports"
+      buildkite-agent artifact upload "*-report.json"
+    plugins:
+      - docker#v5.8.0:
+          image: "python:3.11-slim"
+          workdir: /app
+          volumes:
+            - ".:/app"
+    agents:
+      queue: "default"
+    soft_fail: true
+
+  # Frontend Pipeline
+  - label: ":react: Lint Frontend"
+    key: "lint-frontend"
+    command: |
+      echo "--- Installing dependencies"
+      cd frontend
+      npm ci
+      
+      echo "--- Running ESLint"
+      npm run lint
+      
+      echo "--- Running Prettier"
+      npm run format:check
+    plugins:
+      - docker#v5.8.0:
+          image: "node:20-slim"
+          workdir: /app
+          volumes:
+            - ".:/app"
+    agents:
+      queue: "default"
+
+  - label: ":react: Test Frontend"
+    key: "test-frontend"
+    command: |
+      echo "--- Installing dependencies"
+      cd frontend
+      npm ci
+      
+      echo "--- Running tests"
+      npm run test:ci
+      
+      echo "--- Uploading coverage"
+      buildkite-agent artifact upload "frontend/coverage/**/*"
+    plugins:
+      - docker#v5.8.0:
+          image: "node:20-slim"
+          workdir: /app
+          volumes:
+            - ".:/app"
+    agents:
+      queue: "default"
+
+  - label: ":package: Build Frontend"
+    key: "build-frontend"
+    depends_on: "test-frontend"
+    command: |
+      echo "--- Installing dependencies"
+      cd frontend
+      npm ci
+      
+      echo "--- Building frontend"
+      npm run build
+      
+      echo "--- Build size analysis"
+      du -sh dist/
+      ls -lh dist/assets/
+    plugins:
+      - docker#v5.8.0:
+          image: "node:20-slim"
+          workdir: /app
+          volumes:
+            - ".:/app"
+    agents:
+      queue: "cpu-optimized"
+
+  - wait: ~
+    continue_on_failure: false
+
+  # Docker Build Stage
+  - label: ":docker: Build Backend Image"
+    key: "build-backend-image"
+    if: build.branch == "main" || build.branch == "staging"
+    command: |
+      echo "--- Logging into ECR"
+      aws ecr get-login-password --region ${AWS_REGION} | \
+        docker login --username AWS --password-stdin ${ECR_REGISTRY}
+      
+      IMAGE_TAG=$(buildkite-agent meta-data get "image_tag")
+      ENVIRONMENT=$(buildkite-agent meta-data get "environment")
+      
+      echo "--- Building backend image"
+      docker build \
+        --target production \
+        --build-arg ENVIRONMENT=${ENVIRONMENT} \
+        --tag ${ECR_REGISTRY}/${IMAGE_NAME}-backend:${IMAGE_TAG} \
+        --tag ${ECR_REGISTRY}/${IMAGE_NAME}-backend:latest \
+        --file infrastructure/docker/Dockerfile.backend \
+        --cache-from ${ECR_REGISTRY}/${IMAGE_NAME}-backend:latest \
+        --build-arg BUILDKIT_INLINE_CACHE=1 \
+        .
+      
+      echo "--- Pushing image"
+      docker push ${ECR_REGISTRY}/${IMAGE_NAME}-backend:${IMAGE_TAG}
+      docker push ${ECR_REGISTRY}/${IMAGE_NAME}-backend:latest
+      
+      echo "--- Scanning image with Trivy"
+      docker run --rm \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        aquasec/trivy:latest image \
+        --severity HIGH,CRITICAL \
+        --format json \
+        --output trivy-backend.json \
+        ${ECR_REGISTRY}/${IMAGE_NAME}-backend:${IMAGE_TAG}
+      
+      buildkite-agent artifact upload "trivy-backend.json"
+    plugins:
+      - docker#v5.8.0:
+          volumes:
+            - "/var/run/docker.sock:/var/run/docker.sock"
+    agents:
+      queue: "docker-builder"
+
+  - label: ":docker: Build Frontend Image"
+    key: "build-frontend-image"
+    if: build.branch == "main" || build.branch == "staging"
+    depends_on: "build-frontend"
+    command: |
+      echo "--- Logging into ECR"
+      aws ecr get-login-password --region ${AWS_REGION} | \
+        docker login --username AWS --password-stdin ${ECR_REGISTRY}
+      
+      IMAGE_TAG=$(buildkite-agent meta-data get "image_tag")
+      
+      echo "--- Building frontend image"
+      docker build \
+        --target production \
+        --build-arg VITE_API_URL=/api \
+        --tag ${ECR_REGISTRY}/${IMAGE_NAME}-frontend:${IMAGE_TAG} \
+        --tag ${ECR_REGISTRY}/${IMAGE_NAME}-frontend:latest \
+        --file infrastructure/docker/Dockerfile.frontend \
+        --cache-from ${ECR_REGISTRY}/${IMAGE_NAME}-frontend:latest \
+        --build-arg BUILDKIT_INLINE_CACHE=1 \
+        .
+      
+      echo "--- Pushing image"
+      docker push ${ECR_REGISTRY}/${IMAGE_NAME}-frontend:${IMAGE_TAG}
+      docker push ${ECR_REGISTRY}/${IMAGE_NAME}-frontend:latest
+      
+      echo "--- Scanning image"
+      docker run --rm \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        aquasec/trivy:latest image \
+        --severity HIGH,CRITICAL \
+        --format json \
+        --output trivy-frontend.json \
+        ${ECR_REGISTRY}/${IMAGE_NAME}-frontend:${IMAGE_TAG}
+      
+      buildkite-agent artifact upload "trivy-frontend.json"
+    plugins:
+      - docker#v5.8.0:
+          volumes:
+            - "/var/run/docker.sock:/var/run/docker.sock"
+    agents:
+      queue: "docker-builder"
+
+  - wait
+
+  # Deployment Stage
+  - block: ":rocket: Deploy to Staging?"
+    key: "approve-staging"
+    if: build.branch == "staging"
+
+  - label: ":kubernetes: Deploy to Staging"
+    key: "deploy-staging"
+    if: build.branch == "staging"
+    depends_on: "approve-staging"
+    command: |
+      echo "--- Configuring kubectl"
+      aws eks update-kubeconfig --region ${AWS_REGION} --name marketing-agent-cluster
+      
+      IMAGE_TAG=$(buildkite-agent meta-data get "image_tag")
+      
+      echo "--- Deploying to staging"
+      cd infrastructure/k8s/staging
+      kustomize edit set image \
+        backend=${ECR_REGISTRY}/${IMAGE_NAME}-backend:${IMAGE_TAG} \
+        frontend=${ECR_REGISTRY}/${IMAGE_NAME}-frontend:${IMAGE_TAG}
+      
+      kubectl apply -k .
+      
+      echo "--- Waiting for rollout"
+      kubectl rollout status deployment/marketing-agent-backend -n staging --timeout=5m
+      kubectl rollout status deployment/marketing-agent-frontend -n staging --timeout=5m
+      
+      echo "--- Deployment successful!"
+      
+      # Send Datadog event
+      if [[ -n "${DATADOG_API_KEY}" ]]; then
+        curl -X POST "https://api.${DATADOG_SITE}/api/v1/events?api_key=${DATADOG_API_KEY}" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"title\": \"Deployment to Staging\",
+            \"text\": \"Build ${BUILDKITE_BUILD_NUMBER} deployed to staging\",
+            \"tags\": [\"environment:staging\", \"service:marketing-agent\", \"build:${BUILDKITE_BUILD_NUMBER}\"]
+          }"
+      fi
+    agents:
+      queue: "kubernetes-deployer"
+
+  - block: ":rocket: Deploy to Production?"
+    key: "approve-production"
+    if: build.branch == "main"
+    fields:
+      - select: "Deployment Strategy"
+        key: "deployment-strategy"
+        options:
+          - label: "Blue/Green"
+            value: "blue-green"
+          - label: "Canary"
+            value: "canary"
+          - label: "Rolling"
+            value: "rolling"
+        default: "rolling"
+
+  - label: ":kubernetes: Deploy to Production"
+    key: "deploy-production"
+    if: build.branch == "main"
+    depends_on: "approve-production"
+    command: |
+      echo "--- Configuring kubectl"
+      aws eks update-kubeconfig --region ${AWS_REGION} --name marketing-agent-cluster
+      
+      IMAGE_TAG=$(buildkite-agent meta-data get "image_tag")
+      STRATEGY=$(buildkite-agent meta-data get "deployment-strategy")
+      
+      echo "--- Deploying to production (strategy: ${STRATEGY})"
+      
+      case ${STRATEGY} in
+        "canary")
+          cd infrastructure/k8s/canary
+          ;;
+        *)
+          cd infrastructure/k8s/production
+          ;;
+      esac
+      
+      kustomize edit set image \
+        backend=${ECR_REGISTRY}/${IMAGE_NAME}-backend:${IMAGE_TAG} \
+        frontend=${ECR_REGISTRY}/${IMAGE_NAME}-frontend:${IMAGE_TAG}
+      
+      kubectl apply -k .
+      
+      echo "--- Waiting for rollout"
+      kubectl rollout status deployment/marketing-agent-backend -n production --timeout=10m
+      kubectl rollout status deployment/marketing-agent-frontend -n production --timeout=10m
+      
+      echo "--- Creating release tag"
+      VERSION=$(python -c "import tomli; print(tomli.load(open('pyproject.toml', 'rb'))['project']['version'])")
+      git tag -a "v${VERSION}-${BUILDKITE_BUILD_NUMBER}" -m "Release v${VERSION} build ${BUILDKITE_BUILD_NUMBER}"
+      git push origin "v${VERSION}-${BUILDKITE_BUILD_NUMBER}"
+      
+      echo "--- Production deployment successful!"
+      
+      # Send notifications
+      if [[ -n "${DATADOG_API_KEY}" ]]; then
+        curl -X POST "https://api.${DATADOG_SITE}/api/v1/events?api_key=${DATADOG_API_KEY}" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"title\": \"Production Deployment\",
+            \"text\": \"Version ${VERSION} (build ${BUILDKITE_BUILD_NUMBER}) deployed to production\",
+            \"tags\": [\"environment:production\", \"service:marketing-agent\", \"version:${VERSION}\"],
+            \"alert_type\": \"success\"
+          }"
+      fi
+      
+      if [[ -n "${NEWRELIC_API_KEY}" ]]; then
+        curl -X POST "https://api.newrelic.com/v2/applications/${NEWRELIC_APP_ID}/deployments.json" \
+          -H "X-Api-Key: ${NEWRELIC_API_KEY}" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"deployment\": {
+              \"revision\": \"${BUILDKITE_COMMIT}\",
+              \"changelog\": \"Build ${BUILDKITE_BUILD_NUMBER}\",
+              \"description\": \"Production deployment\",
+              \"user\": \"${BUILDKITE_BUILD_CREATOR}\"
+            }
+          }"
+      fi
+    agents:
+      queue: "kubernetes-deployer"
+
+  - label: ":test_tube: Integration Tests"
+    key: "integration-tests"
+    depends_on:
+      - "deploy-staging"
+      - "deploy-production"
+    command: |
+      echo "--- Running integration tests"
+      ENVIRONMENT=$(buildkite-agent meta-data get "environment")
+      
+      python -m venv venv
+      . venv/bin/activate
+      pip install -e ".[dev]"
+      
+      export API_URL=$(kubectl get service marketing-agent-backend -n ${ENVIRONMENT} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+      
+      pytest tests/integration/ \
+        --base-url=https://${API_URL} \
+        --verbose \
+        --junit-xml=integration-results.xml
+      
+      buildkite-agent artifact upload "integration-results.xml"
+    agents:
+      queue: "default"
+
+  # Post-deployment steps
+  - label: ":bar_chart: Send Metrics"
+    key: "send-metrics"
+    depends_on:
+      - "deploy-staging"
+      - "deploy-production"
+    command: |
+      ENVIRONMENT=$(buildkite-agent meta-data get "environment")
+      
+      # Send to Datadog
+      if [[ -n "${DATADOG_API_KEY}" ]]; then
+        curl -X POST "https://api.${DATADOG_SITE}/api/v1/series?api_key=${DATADOG_API_KEY}" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"series\": [{
+              \"metric\": \"buildkite.build\",
+              \"points\": [[$(date +%s), 1]],
+              \"type\": \"count\",
+              \"tags\": [
+                \"environment:${ENVIRONMENT}\",
+                \"branch:${BUILDKITE_BRANCH}\",
+                \"status:success\",
+                \"service:marketing-agent\"
+              ]
+            }]
+          }"
+      fi
+    agents:
+      queue: "default"
+
+notify:
+  - slack: "${SLACK_WEBHOOK_URL}#builds"
+    if: build.state == "failed"
+  - slack: "${SLACK_WEBHOOK_URL}#releases"
+    if: build.state == "passed" && build.branch == "main"
