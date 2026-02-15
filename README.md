@@ -6,7 +6,7 @@
 [![CI/CD](https://img.shields.io/badge/CI%2FCD-Multi--Platform-orange.svg)](#-cicd-platforms)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A **production-grade GenAI platform** demonstrating enterprise-level AI engineering with agentic workflows, multi-cloud infrastructure, and comprehensive observability. Built to showcase **every technology** in modern AI Engineering job descriptions.
+A **production-grade GenAI platform** demonstrating enterprise-level AI engineering with agentic workflows, multi-cloud infrastructure, and comprehensive observability. Built to showcase **every technology** in modern AI Engineering.
 
 ---
 
