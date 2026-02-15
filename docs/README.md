@@ -1,227 +1,209 @@
-# Marketing Agent - AI-Powered Campaign Optimization
+# Marketing Agent Platform - Documentation
 
-> Intelligent reasoning layer that analyzes campaign performance and recommends optimal marketing workflows
+Welcome to the comprehensive documentation for the Marketing Agent AI Platform. This documentation covers everything from quick starts to production deployment.
 
-## 📋 Overview
-
-This Marketing Agent replaces manual analysis of campaign performance with AI-powered reasoning. Instead of marketing executives manually deciding whether a CPA increase requires creative refresh, audience expansion, or bid adjustment—the agent analyzes multiple data sources, identifies root causes, and recommends specific actions with evidence-based reasoning.
-
-**Example Recommendation:**
-```
-Campaign: Spring Sale 2026
-Recommended Action: Bid Adjustment (+15%)
-
-Reasoning: CPA increased 30% over 3 days. Analysis shows:
-- Creative CTR stable (no fatigue)
-- Audience near saturation (95% impression share)
-- Competitor activity up 40%
-
-Root Cause: Competitive pressure → Recommend bid adjustment
-Expected Impact: Restore CPA to $47-49 within 2-3 days
-Confidence: 82%
-```
-
-## 🎯 Key Features
-
-- **Multi-Source Analysis**: Campaign metrics, creative performance, competitor signals, audience analytics
-- **Causal Reasoning**: Identifies root causes, not just symptoms
-- **Structured Recommendations**: Specific actions with reasoning, risks, alternatives
-- **Human-in-the-Loop**: All recommendations require approval initially
-- **Outcome Tracking**: Measures actual impact to improve over time
-- **Production-Grade**: Monitoring, evaluation, CI/CD from day one
-
-## 🏗️ Architecture
+## 📚 Documentation Structure
 
 ```
-Marketing Dashboard → API Gateway → Agent Workflow → Data Sources
-                         ↓              ↓
-                   Evaluation    Monitoring
+docs/
+├── README.md (this file)              # Documentation hub
+├── DOCUMENTATION_INDEX.md             # Detailed documentation index
+├── ARCHITECTURE_DIAGRAM.md            # System architecture overview
+│
+├── getting-started/                   # 🚀 Quick Start Guides
+│   ├── QUICKSTART.md                 # Fast 5-minute setup
+│   ├── QUICK_START.md                # Comprehensive getting started
+│   ├── QUICK_START_FRONTEND.md       # Frontend-specific setup
+│   └── GETTING_STARTED.md            # Detailed setup instructions
+│
+├── guides/                            # 📖 Implementation Guides
+│   ├── PRODUCTION_PATTERNS.md        # Production best practices
+│   ├── demos/                         # Demo & Presentation Guides
+│   │   ├── DEMO_GUIDE.md             # Complete demo walkthrough
+│   │   ├── DEMO_INSTRUCTIONS.md       # Quick demo steps
+│   │   ├── FULL_STACK_DEMO.md        # Full stack demonstration
+│   │   └── PRESENTATION_GUIDE.md      # Presentation materials
+│   └── implementation/                # Implementation Documentation
+│       ├── IMPLEMENTATION_STATUS.md   # Current implementation status
+│       ├── MARKETING_AGENT_IMPLEMENTATION_GUIDE.md  # Complete implementation guide
+│       └── POC_SUMMARY.md            # Proof of concept summary
+│
+├── deployment/                        # 🚀 Deployment & Infrastructure
+│   ├── TERRAFORM_SETUP.md            # Infrastructure provisioning
+│   ├── CI_CD_PIPELINE.md             # CI/CD overview
+│   ├── CICD_SETUP_GUIDE.md           # CI/CD setup instructions
+│   ├── CICD_QUICKSTART.md            # CI/CD quick start
+│   ├── CICD_QUICK_REFERENCE.md       # CI/CD command reference
+│   └── CICD_SUMMARY.md               # CI/CD platform summary
+│
+├── monitoring/                        # 📊 Monitoring & Observability
+│   ├── DATADOG_INTEGRATION.md        # Datadog setup & integration
+│   ├── AI_OBSERVABILITY.md           # AI-specific observability
+│   └── AIOPS_SUMMARY.md              # AIOps capabilities summary
+│
+├── reference/                         # 📋 Reference Documentation
+│   ├── SKILLS_SHOWCASE.md            # Technology skills showcase
+│   ├── COMPLETE_TECH_IMPLEMENTATION.md  # Complete tech stack
+│   ├── REQUIREMENTS_COVERAGE.md       # Job requirements alignment
+│   ├── PROJECT_STRUCTURE.md          # Project organization
+│   ├── IMPLEMENTATION_CHECKLIST.md   # Implementation checklist
+│   ├── EXECUTIVE_SUMMARY.md          # Executive overview
+│   └── DOCUMENTATION_SUMMARY.md      # Documentation overview
+│
+├── architecture/                      # 🏗️ Architecture Documentation
+│   └── (Architecture Decision Records, diagrams)
+│
+├── api/                              # 🔌 API Documentation
+│   └── (API specifications, endpoints)
+│
+└── runbooks/                         # 📕 Operational Runbooks
+    └── (Production operations guides)
 ```
 
-**Tech Stack:**
-- **Backend**: Python 3.11+, FastAPI
-- **Agent**: LangGraph + LangChain
-- **LLMs**: OpenAI GPT-4o / Anthropic Claude 3.5
-- **Database**: PostgreSQL + Redis
-- **Observability**: LangSmith, Prometheus, Grafana
-- **Deployment**: Docker Compose (dev), Kubernetes (prod)
+## 🎯 Quick Navigation
 
-## 📖 Documentation
+### For New Users
+1. **First Time Setup**: Start with [QUICKSTART.md](getting-started/QUICKSTART.md)
+2. **Understanding the Project**: Read [EXECUTIVE_SUMMARY.md](reference/EXECUTIVE_SUMMARY.md)
+3. **Run a Demo**: Follow [DEMO_GUIDE.md](guides/demos/DEMO_GUIDE.md)
 
-- **[MARKETING_AGENT_IMPLEMENTATION_GUIDE.md](./MARKETING_AGENT_IMPLEMENTATION_GUIDE.md)** - Complete implementation guide (73 pages)
-- **[QUICK_START.md](./QUICK_START.md)** - Get started immediately
+### For Developers
+1. **Full Setup**: [GETTING_STARTED.md](getting-started/GETTING_STARTED.md)
+2. **Architecture**: [ARCHITECTURE_DIAGRAM.md](ARCHITECTURE_DIAGRAM.md)
+3. **Production Patterns**: [PRODUCTION_PATTERNS.md](guides/PRODUCTION_PATTERNS.md)
+4. **Implementation Guide**: [MARKETING_AGENT_IMPLEMENTATION_GUIDE.md](guides/implementation/MARKETING_AGENT_IMPLEMENTATION_GUIDE.md)
 
-## 🚀 Quick Start
+### For DevOps Engineers
+1. **Infrastructure Setup**: [TERRAFORM_SETUP.md](deployment/TERRAFORM_SETUP.md)
+2. **CI/CD Configuration**: [CICD_SETUP_GUIDE.md](deployment/CICD_SETUP_GUIDE.md)
+3. **Monitoring Integration**: [DATADOG_INTEGRATION.md](monitoring/DATADOG_INTEGRATION.md)
 
-### Prerequisites
+### For Hiring Managers / Interviewers
+1. **Skills Showcase**: [SKILLS_SHOWCASE.md](reference/SKILLS_SHOWCASE.md)
+2. **Tech Stack**: [COMPLETE_TECH_IMPLEMENTATION.md](reference/COMPLETE_TECH_IMPLEMENTATION.md)
+3. **Requirements Alignment**: [REQUIREMENTS_COVERAGE.md](reference/REQUIREMENTS_COVERAGE.md)
 
-- Python 3.11+
-- Docker & Docker Compose
-- OpenAI API Key or Anthropic API Key
-- Access to marketing data sources (Google Ads, Meta Ads, etc.)
+## 📖 Documentation by Topic
 
-### Setup
+### Getting Started (5-30 minutes)
+| Document | Description | Time |
+|----------|-------------|------|
+| [QUICKSTART.md](getting-started/QUICKSTART.md) | Fastest path to running demo | 5 min |
+| [QUICK_START_FRONTEND.md](getting-started/QUICK_START_FRONTEND.md) | Frontend-only setup | 10 min |
+| [QUICK_START.md](getting-started/QUICK_START.md) | Complete quick start | 15 min |
+| [GETTING_STARTED.md](getting-started/GETTING_STARTED.md) | Full setup with details | 30 min |
 
-```bash
-# Clone repository
-git clone <repo-url>
-cd marketing-agent-workflow
+### Deployment & Infrastructure
+| Document | Description | Complexity |
+|----------|-------------|------------|
+| [TERRAFORM_SETUP.md](deployment/TERRAFORM_SETUP.md) | Multi-cloud infrastructure | Advanced |
+| [CI_CD_PIPELINE.md](deployment/CI_CD_PIPELINE.md) | Pipeline architecture | Intermediate |
+| [CICD_SETUP_GUIDE.md](deployment/CICD_SETUP_GUIDE.md) | CI/CD platform setup | Advanced |
+| [CICD_QUICK_REFERENCE.md](deployment/CICD_QUICK_REFERENCE.md) | Common CI/CD commands | Reference |
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+### Monitoring & Observability
+| Document | Description | Tools Covered |
+|----------|-------------|---------------|
+| [DATADOG_INTEGRATION.md](monitoring/DATADOG_INTEGRATION.md) | Complete Datadog setup | Datadog APM |
+| [AI_OBSERVABILITY.md](monitoring/AI_OBSERVABILITY.md) | AI-specific monitoring | LangSmith, Datadog |
+| [AIOPS_SUMMARY.md](monitoring/AIOPS_SUMMARY.md) | AIOps capabilities | All monitoring tools |
 
-# Install dependencies
-pip install -r requirements.txt
+### Production Guides
+| Document | Description | Audience |
+|----------|-------------|----------|
+| [PRODUCTION_PATTERNS.md](guides/PRODUCTION_PATTERNS.md) | Best practices for GenAI | Developers |
+| [DEMO_GUIDE.md](guides/demos/DEMO_GUIDE.md) | Complete demo walkthrough | All |
+| [PRESENTATION_GUIDE.md](guides/demos/PRESENTATION_GUIDE.md) | Presentation materials | Presenters |
 
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your API keys
+## 🔧 Additional Resources
 
-# Start services (PostgreSQL, Redis)
-docker-compose up -d
+### Infrastructure Code
+- **Terraform**: [infrastructure/terraform/](../infrastructure/terraform/)
+- **Kubernetes**: [infrastructure/k8s/](../infrastructure/k8s/)
+- **Docker**: [docker-compose.yml](../docker-compose.yml)
 
-# Run database migrations
-alembic upgrade head
+### CI/CD Pipelines
+- **GitHub Actions**: [.github/workflows/](../.github/workflows/)
+- **Jenkins**: [.jenkins/Jenkinsfile](../.jenkins/Jenkinsfile)
+- **CircleCI**: [.circleci/config.yml](../.circleci/config.yml)
+- **Buildkite**: [.buildkite/pipeline.yml](../.buildkite/pipeline.yml)
 
-# Start development server
-uvicorn src.api.main:app --reload
-```
+### Source Code
+- **Backend**: [src/](../src/)
+- **Frontend**: [frontend/](../frontend/)
+- **Tests**: [tests/](../tests/)
 
-### Generate First Recommendation
+## 🆘 Getting Help
 
-```bash
-# Using CLI
-python -m src.cli generate-recommendation --campaign-id "campaign_123"
+### Common Issues
+1. **Setup Problems**: Check [GETTING_STARTED.md](getting-started/GETTING_STARTED.md) troubleshooting section
+2. **Deployment Issues**: See [TERRAFORM_SETUP.md](deployment/TERRAFORM_SETUP.md) troubleshooting
+3. **API Errors**: Review [API Documentation](api/)
 
-# Or using API
-curl -X POST http://localhost:8000/api/v1/recommendations/analyze \
-  -H "Content-Type: application/json" \
-  -d '{"campaign_id": "campaign_123"}'
-```
+### Contributing
+- Read [CONTRIBUTING.md](../CONTRIBUTING.md) for contribution guidelines
+- Check [IMPLEMENTATION_CHECKLIST.md](reference/IMPLEMENTATION_CHECKLIST.md) for open tasks
 
-## 📊 Success Metrics
+### Support Channels
+- **Issues**: GitHub Issues for bug reports
+- **Discussions**: GitHub Discussions for questions
+- **Documentation**: This documentation set
 
-**Quality Metrics:**
-- Recommendation acceptance rate: Target >70%
-- Positive impact when followed: Target >80%
-- Agreement with human experts: Target >75%
+## 📊 Project Status
 
-**Operational Metrics:**
-- Latency: <30 seconds per recommendation
-- Uptime: 99.5%+
-- Cost per recommendation: Optimized and tracked
+Current implementation status: **Production-Ready MVP**
 
-## 📅 Implementation Timeline
+- ✅ Complete infrastructure code (AWS, GCP, Azure)
+- ✅ 4 CI/CD platforms configured
+- ✅ 6 monitoring tools integrated
+- ✅ Production-ready FastAPI backend
+- ✅ React TypeScript frontend
+- ✅ Comprehensive evaluation framework
+- ✅ 8000+ lines of documentation
 
-| Phase | Duration | Focus |
-|-------|----------|-------|
-| **Phase 0** | Week 1-2 | Setup & foundations |
-| **Phase 1** | Week 3-4 | Data integration |
-| **Phase 2** | Week 5-8 | Core agent MVP |
-| **Phase 3** | Week 9-12 | Evaluation framework |
-| **Phase 4** | Week 13-16 | Production API & UI |
-| **Phase 5** | Week 17-18 | Monitoring & observability |
-| **Phase 6** | Week 19-24 | Advanced features |
-| **Phase 7** | Month 7+ | Trust building & iteration |
+See [IMPLEMENTATION_STATUS.md](guides/implementation/IMPLEMENTATION_STATUS.md) for details.
 
-**Note:** Timeline is flexible. Production deployment happens when quality is proven, not on a fixed schedule.
+## 🗺️ Learning Paths
 
-## 🧪 Testing
+### Path 1: Quick Demo (1 hour)
+1. [QUICKSTART.md](getting-started/QUICKSTART.md)
+2. [DEMO_GUIDE.md](guides/demos/DEMO_GUIDE.md)
+3. [EXECUTIVE_SUMMARY.md](reference/EXECUTIVE_SUMMARY.md)
 
-```bash
-# Run unit tests
-pytest tests/unit
+### Path 2: Full Developer Setup (Half day)
+1. [GETTING_STARTED.md](getting-started/GETTING_STARTED.md)
+2. [ARCHITECTURE_DIAGRAM.md](ARCHITECTURE_DIAGRAM.md)
+3. [PRODUCTION_PATTERNS.md](guides/PRODUCTION_PATTERNS.md)
+4. [MARKETING_AGENT_IMPLEMENTATION_GUIDE.md](guides/implementation/MARKETING_AGENT_IMPLEMENTATION_GUIDE.md)
 
-# Run integration tests
-pytest tests/integration
+### Path 3: Production Deployment (1-2 days)
+1. [TERRAFORM_SETUP.md](deployment/TERRAFORM_SETUP.md)
+2. [CICD_SETUP_GUIDE.md](deployment/CICD_SETUP_GUIDE.md)
+3. [DATADOG_INTEGRATION.md](monitoring/DATADOG_INTEGRATION.md)
+4. [PRODUCTION_PATTERNS.md](guides/PRODUCTION_PATTERNS.md)
 
-# Run evaluation on golden dataset
-python -m evaluation.run_golden_set
+### Path 4: Interview Preparation (2-3 hours)
+1. [SKILLS_SHOWCASE.md](reference/SKILLS_SHOWCASE.md)
+2. [COMPLETE_TECH_IMPLEMENTATION.md](reference/COMPLETE_TECH_IMPLEMENTATION.md)
+3. [REQUIREMENTS_COVERAGE.md](reference/REQUIREMENTS_COVERAGE.md)
+4. [PRESENTATION_GUIDE.md](guides/demos/PRESENTATION_GUIDE.md)
 
-# Run promptfoo tests
-promptfoo eval
-```
+## 📝 Document Conventions
 
-## 🔍 Monitoring
+- **🚀** = Quick start / Getting started
+- **📖** = Detailed guide
+- **🏗️** = Architecture / Design
+- **📊** = Monitoring / Metrics
+- **🔧** = Configuration / Setup
+- **📋** = Reference / Checklist
+- **⚠️** = Important / Warning
 
-**Dashboards:**
-- http://localhost:3001 - Grafana (metrics)
-- https://smith.langchain.com - LangSmith (LLM traces)
-- http://localhost:9090 - Prometheus (raw metrics)
+## 🔄 Documentation Updates
 
-**Key Metrics:**
-- Recommendations per day
-- Acceptance rate
-- p95 latency
-- LLM costs
-- Error rates
+This documentation is actively maintained. Last major update: February 2026
 
-## 📈 Deployment
-
-```bash
-# Deploy to staging
-kubectl apply -f k8s/staging/
-
-# Deploy to production (requires approval)
-kubectl apply -f k8s/production/
-```
-
-## 🤝 Contributing
-
-1. Create feature branch: `git checkout -b feature/amazing-improvement`
-2. Make changes and add tests
-3. Ensure all tests pass and acceptance rate maintained
-4. Create PR with evaluation results
-5. Get review from team
-6. Merge after CI passes
-
-## 🔐 Security
-
-- API keys stored in secrets manager
-- Input validation on all endpoints
-- Audit trail for all recommendations and decisions
-- Rate limiting to prevent abuse
-
-## 📚 Additional Resources
-
-**AI Agent Patterns:**
-- [Building Effective Agents - Anthropic](https://www.anthropic.com/research/building-effective-agents)
-- [LangGraph Documentation](https://docs.langchain.com/oss/python/langgraph/overview)
-
-**Evaluation:**
-- [LangSmith Guide](https://docs.langchain.com/langsmith/evaluation)
-- [promptfoo Docs](https://www.promptfoo.dev/docs/intro/)
-
-## 🐛 Troubleshooting
-
-**Agent generates low-quality recommendations?**
-- Check evaluation results in LangSmith
-- Review prompt versions in `prompts/` directory
-- Compare with golden dataset cases
-
-**High latency?**
-- Check data collector health
-- Review cache hit rates
-- Consider model optimization
-
-**Low acceptance rate?**
-- Review feedback from marketing team
-- Analyze rejected recommendations for patterns
-- Iterate on prompts based on specific failure modes
-
-## 📞 Support
-
-- **Slack**: #marketing-agent
-- **Email**: genai-team@company.com
-- **Documentation**: [Full Implementation Guide](./MARKETING_AGENT_IMPLEMENTATION_GUIDE.md)
-
-## 📄 License
-
-[Your License Here]
+For the most up-to-date documentation structure, see [DOCUMENTATION_INDEX.md](DOCUMENTATION_INDEX.md).
 
 ---
 
-**Built with** ❤️ **by the GenAI Engineering Team**
-
-Last updated: February 11, 2026
+**Need something specific?** Use the search feature in your IDE or check the [Complete Documentation Index](DOCUMENTATION_INDEX.md).
