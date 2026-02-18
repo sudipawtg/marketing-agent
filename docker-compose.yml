@@ -1,85 +1,363 @@
-version: '3.9'
+################################################################################
+# DOCKER COMPOSE CONFIGURATION
+################################################################################
+#
+# PURPOSE:
+#   Define and run multi-container Docker application for local development
+#
+# WHAT IS DOCKER COMPOSE?
+#   Docker Compose is a tool for defining and running multi-container Docker
+#   applications. With a single command, you can start all services needed
+#   for your application to run.
+#
+# WHY USE DOCKER COMPOSE?
+#   - Run entire application stack with one command
+#   - Consistent development environment across team
+#   - Easy to add/remove services
+#   - Isolate dependencies in containers
+#   - Mirrors production architecture locally
+#
+# SERVICES IN THIS FILE:
+#   1. postgres: PostgreSQL database
+#   2. redis: Redis cache
+#   3. backend: Python/FastAPI application
+#   4. frontend: React/TypeScript application
+#
+# NETWORKING:
+#   All services are connected via a custom bridge network
+#   Services can communicate using their service names as hostnames
+#   Example: backend connects to postgres using hostname "postgres"
+#
+# VOLUMES:
+#   Named volumes persist data across container restarts
+#   - postgres_data: Database files
+#   - redis_data: Redis persistence
+#
+# HOW TO USE:
+#   docker-compose up       # Start all services
+#   docker-compose up -d    # Start in background (detached)
+#   docker-compose down     # Stop and remove containers
+#   docker-compose logs -f  # View logs
+#   docker-compose ps       # List running containers
+#   docker-compose restart  # Restart all services
+#
+################################################################################
 
+version: '3.9'  # Docker Compose file format version
+
+# SERVICES SECTION
+# Each service is a container that will be created and started
 services:
+  ############################################################################
+  # SERVICE: POSTGRES
+  ############################################################################
+  #
+  # PostgreSQL is our primary relational database
+  # Stores: campaigns, users, settings, analytics data
+  #
   postgres:
+    # IMAGE: Pre-built Docker image from Docker Hub
+    # postgres:15-alpine = PostgreSQL 15 on Alpine Linux (smaller, faster)
     image: postgres:15-alpine
+    
+    # CONTAINER NAME: Custom name instead of auto-generated
+    # Useful for docker commands: docker logs marketing-agent-postgres
     container_name: marketing-agent-postgres
+    
+    # ENVIRONMENT VARIABLES: Configure PostgreSQL
+    # These create the initial database and user
     environment:
-      POSTGRES_DB: marketing_agent
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: marketing_agent        # Database name to create
+      POSTGRES_USER: postgres             # Superuser username
+      POSTGRES_PASSWORD: postgres         # Password (CHANGE IN PRODUCTION!)
+    
+    # PORT MAPPING: host:container
+    # Exposes PostgreSQL on localhost:5432
+    # This allows tools like pgAdmin or DBeaver to connect
     ports:
-      - "5432:5432"
+      - \"5432:5432\"
+    
+    # VOLUMES: Persist database data
+    # Named volume 'postgres_data' stores all database files
+    # Without this, data would be lost when container stops
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    
+    # HEALTH CHECK: Verify PostgreSQL is ready
+    # Many apps need to wait for DB to be ready before starting
+    # pg_isready = PostgreSQL utility that checks if server is accepting connections
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: [\"CMD-SHELL\", \"pg_isready -U postgres\"]  # Command to run
+      interval: 10s                                   # Check every 10 seconds
+      timeout: 5s                                     # Each check times out after 5 seconds
+      retries: 5                                      # Retry 5 times before marking unhealthy
+    
+    # NETWORK: Connect to custom network
+    # Allows service-to-service communication
     networks:
       - marketing-agent-network
 
+  ############################################################################
+  # SERVICE: REDIS
+  ############################################################################
+  #
+  # Redis is an in-memory data store used for:
+  # - Caching: Store frequently accessed data
+  # - Session storage: User sessions
+  # - Real-time features: Pub/sub, queues
+  # - Rate limiting: Track API request counts
+  #
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine                    # Redis 7 on Alpine Linux
     container_name: marketing-agent-redis
+    
+    # PORT MAPPING
+    # Redis standard port is 6379
     ports:
       - "6379:6379"
+    
+    # VOLUMES: Persist Redis data
+    # /data is where Redis stores its persistence files
     volumes:
       - redis_data:/data
+    
+    # HEALTH CHECK
+    # redis-cli ping = Simple ping command to verify Redis is responding
+    # Responds with "PONG" if healthy
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
+    
     networks:
       - marketing-agent-network
 
+  ############################################################################
+  # SERVICE: BACKEND
+  ############################################################################
+  #
+  # Python/FastAPI backend application
+  # Handles: API requests, business logic, database operations, AI agents
+  #
   backend:
+    # BUILD: Build image from Dockerfile instead of pulling from registry
+    # context: . = build context is repository root
+    # dockerfile: path to Dockerfile
     build:
       context: .
       dockerfile: infrastructure/docker/Dockerfile.backend
+    
     container_name: marketing-agent-backend
+    
+    # ENVIRONMENT VARIABLES: Configure the application
+    # These are available to the Python application via os.environ
     environment:
+      # DATABASE_URL: PostgreSQL connection string
+      # Format: postgresql://username:password@host:port/database
+      # Note: host is "postgres" (service name), not "localhost"
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/marketing_agent
+      
+      # REDIS_URL: Redis connection string
       REDIS_URL: redis://redis:6379
+      
+      # API KEYS: For external services
+      # ${OPENAI_API_KEY} = reads from .env file or shell environment
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
-      ENVIRONMENT: development
-      LOG_LEVEL: DEBUG
+      
+      # APPLICATION CONFIG
+      ENVIRONMENT: development              # development, staging, or production
+      LOG_LEVEL: DEBUG                     # DEBUG, INFO, WARNING, ERROR
+    
+    # PORT MAPPING
+    # FastAPI typically runs on port 8000
     ports:
       - "8000:8000"
+    
+    # VOLUMES: Mount code for live reload
+    # Bind mounts = map local directory to container directory
+    # Changes to local files are immediately reflected in container
+    # 
+    # ./src:/app/src = mount local src/ to container /app/src
+    # This enables hot reload during development
     volumes:
-      - ./src:/app/src
-      - ./logs:/app/logs
+      - ./src:/app/src                     # Source code (live reload)
+      - ./logs:/app/logs                   # Log files (view on host)
+    
+    # DEPENDS_ON: Start order and wait for health
+    # Backend won't start until postgres and redis are healthy
+    # 
+    # condition: service_healthy = wait for health check to pass
+    # Without this, backend might try to connect before DB is ready
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    
     networks:
       - marketing-agent-network
+    
+    # RESTART POLICY
+    # unless-stopped = always restart unless explicitly stopped
+    # Handles crashes and ensures service stays up
     restart: unless-stopped
 
+  ############################################################################
+  # SERVICE: FRONTEND
+  ############################################################################
+  #
+  # React/TypeScript frontend application
+  # Serves the web UI for the marketing agent
+  #
   frontend:
+    # BUILD: Build from frontend-specific Dockerfile
     build:
-      context: ./frontend
+      context: ./frontend                  # Build context is frontend directory
       dockerfile: ../infrastructure/docker/Dockerfile.frontend
+    
     container_name: marketing-agent-frontend
+    
+    # ENVIRONMENT VARIABLES
     environment:
+      # VITE_API_URL: Backend API endpoint
+      # Vite (build tool) injects this at build time
+      # Frontend uses this to make API requests
       VITE_API_URL: http://localhost:8000
+    
+    # PORT MAPPING
+    # Frontend served on standard HTTP port 80
+    # Access at: http://localhost
     ports:
       - "80:80"
+    
+    # DEPENDS_ON: Wait for backend to be ready
+    # Frontend needs backend API to function
     depends_on:
       - backend
+    
     networks:
       - marketing-agent-network
+    
     restart: unless-stopped
 
+################################################################################
+# NETWORKS
+################################################################################
+#
+# Custom bridge network for service communication
+# 
+# WHY CUSTOM NETWORK?
+# - Automatic DNS resolution (services can find each other by name)
+# - Isolated from other Docker networks
+# - Configurable subnet and gateway
+# - Better security
+#
+# NETWORK TYPE: bridge
+# - Default network type for Docker Compose
+# - Creates virtual network on host
+# - Services can communicate via service names
+# - Can't be accessed from outside host (unless ports exposed)
+#
 networks:
   marketing-agent-network:
-    driver: bridge
+    driver: bridge                         # Bridge network type
 
+################################################################################
+# VOLUMES
+################################################################################
+#
+# Named volumes for persistent data storage
+#
+# WHY NAMED VOLUMES?
+# - Data persists when containers are removed
+# - Managed by Docker (stored in /var/lib/docker/volumes/)
+# - Can be backed up and restored
+# - Better performance than bind mounts
+# - Portable across environments
+#
+# VOLUME LIFECYCLE:
+#   docker-compose up    = creates volumes if they don't exist
+#   docker-compose down  = preserves volumes
+#   docker-compose down -v  = removes volumes (DATA LOSS!)
+#
+# BACKUP VOLUMES:
+#   docker run --rm -v postgres_data:/data -v $(pwd):/backup \
+#     alpine tar czf /backup/postgres-backup.tar.gz /data
+#
 volumes:
+  # PostgreSQL data: Database files, WAL logs, config
   postgres_data:
+  
+  # Redis data: RDB snapshots, AOF logs
   redis_data:
+
+################################################################################
+# USAGE EXAMPLES
+################################################################################
+#
+# START ALL SERVICES:
+#   docker-compose up                    # Start with logs in foreground
+#   docker-compose up -d                 # Start in background (detached)
+#
+# STOP SERVICES:
+#   docker-compose stop                  # Stop containers (data preserved)
+#   docker-compose down                  # Stop and remove containers
+#   docker-compose down -v               # Stop, remove containers AND volumes
+#
+# VIEW LOGS:
+#   docker-compose logs                  # All logs
+#   docker-compose logs -f               # Follow logs (tail -f)
+#   docker-compose logs backend          # Only backend logs
+#   docker-compose logs -f --tail=100    # Last 100 lines, then follow
+#
+# RESTART SERVICES:
+#   docker-compose restart               # Restart all
+#   docker-compose restart backend       # Restart specific service
+#
+# REBUILD IMAGES:
+#   docker-compose build                 # Rebuild all images
+#   docker-compose build --no-cache      # Rebuild from scratch
+#   docker-compose up --build            # Rebuild and start
+#
+# EXECUTE COMMANDS:
+#   docker-compose exec backend bash     # Open shell in backend container
+#   docker-compose exec postgres psql -U postgres  # Connect to PostgreSQL
+#   docker-compose exec redis redis-cli  # Connect to Redis CLI
+#
+# CHECK STATUS:
+#   docker-compose ps                    # List running containers
+#   docker-compose top                   # Show running processes
+#
+# SCALE SERVICES:
+#   docker-compose up --scale backend=3  # Run 3 backend instances
+#
+################################################################################
+#
+# TROUBLESHOOTING:
+#
+# PORT ALREADY IN USE:
+#   - Change port mapping: "8001:8000" instead of "8000:8000"
+#   - Stop conflicting service: sudo lsof -i :8000
+#
+# PERMISSION DENIED (volumes):
+#   - Check file permissions
+#   - May need to run with sudo on Linux
+#
+# SERVICE WON'T START:
+#   - Check logs: docker-compose logs <service>
+#   - Check health: docker-compose ps
+#   - Rebuild: docker-compose up --build
+#
+# DATABASE CONNECTION FAILED:
+#   - Wait for health check: depends_on with service_healthy
+#   - Check DATABASE_URL format
+#   - Verify postgres service is running
+#
+# ENVIRONMENT VARIABLES NOT WORKING:
+#   - Create .env file in project root
+#   - Add: OPENAI_API_KEY=your_key_here
+#   - Docker Compose automatically loads .env
+#
+################################################################################

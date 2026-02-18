@@ -1,56 +1,135 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# SECURITY SCANNING WORKFLOW
+# ═══════════════════════════════════════════════════════════════════════════
+# 
+# PURPOSE:
+# This workflow performs comprehensive security scanning across multiple layers:
+# - Dependency vulnerabilities (Python & Node.js packages)
+# - Static Application Security Testing (SAST - code vulnerabilities)
+# - Secret scanning (API keys, passwords leaked in code)
+# - Container image vulnerabilities
+# - Infrastructure as Code (IaC) misconfigurations
+# - License compliance checking
+#
+# WHY IT'S IMPORTANT:
+# Security is multi-layered - no single tool catches everything. This workflow
+# implements "defense in depth" by scanning at every level of the application.
+# Running these scans regularly (daily + on every PR) ensures vulnerabilities
+# are caught early before they reach production.
+#
+# WHEN IT RUNS:
+# - On push to main or develop branches (every code change is scanned)
+# - On pull requests (prevent vulnerabilities from merging)
+# - Daily at 2 AM UTC via scheduled cron job (catch newly discovered vulnerabilities)
+# - Manually via workflow_dispatch (on-demand security audits)
+#
+# LEARNING NOTES:
+# - Security scanning should be automated, not manual
+# - Different tools specialize in different vulnerability types
+# - "Shift left" = catch security issues earlier in development
+# - SARIF format = standard for security findings that integrates with GitHub
+#
+# ═══════════════════════════════════════════════════════════════════════════
+
 name: Security Scanning
 
+# ───────────────────────────────────────────────────────────────────────────
+# WORKFLOW TRIGGERS
+# ───────────────────────────────────────────────────────────────────────────
 on:
+  # Trigger on push to main/develop - scan production-bound code
   push:
     branches: [ main, develop ]
+  
+  # Trigger on pull requests - prevent vulnerable code from merging
   pull_request:
     branches: [ main, develop ]
+  
+  # Scheduled daily scan - catch newly disclosed vulnerabilities (CVEs)
+  # Cron format: minute hour day month weekday
+  # '0 2 * * *' = every day at 2:00 AM UTC
   schedule:
-    # Run security scans daily at 2 AM UTC
     - cron: '0 2 * * *'
+  
+  # Allow manual triggering - useful for ad-hoc security audits
   workflow_dispatch:
 
+# ═══════════════════════════════════════════════════════════════════════════
+# JOBS: SECURITY SCANNING LAYERS
+# ═══════════════════════════════════════════════════════════════════════════
+
 jobs:
-  # Dependency vulnerability scanning
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 1: DEPENDENCY VULNERABILITY SCANNING
+  # ─────────────────────────────────────────────────────────────────────────
+  # WHAT: Scans third-party packages (pip & npm) for known vulnerabilities
+  # WHY: 80% of code is dependencies - they're a major attack vector
+  # TOOLS: Safety (Python CVE database), pip-audit (PyPI advisory DB), npm audit
+  # OUTPUT: JSON reports with CVE IDs, severity levels, and remediation advice
+  # ─────────────────────────────────────────────────────────────────────────
   dependency-scan:
     name: Dependency Vulnerability Scan
     runs-on: ubuntu-latest
     
     steps:
+      # Step 1: Get the code to scan
       - name: Checkout code
         uses: actions/checkout@v4
       
+      # Step 2: Set up Python environment for scanning Python dependencies
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.11'  # Match production Python version
       
+      # Step 3: Install security scanning tools for Python
+      # - safety: Checks against Safety DB (curated vulnerability database)
+      # - pip-audit: Checks against PyPI's official advisory database
+      # Using both tools provides better coverage (they use different sources)
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install safety pip-audit
       
+      # Step 4: Run Safety vulnerability scanner
+      # - pip freeze: Lists all installed packages with exact versions
+      # - safety check: Compares against known vulnerable versions
+      # - --stdin: Read package list from stdin (pipe)
+      # - --json: Output structured data for programmatic analysis
+      # - continue-on-error: Don't fail workflow, just report findings
       - name: Run Safety check (Python)
         run: |
           pip freeze | safety check --stdin --json > safety-report.json
         continue-on-error: true
       
+      # Step 5: Run pip-audit (second opinion for Python packages)
+      # pip-audit uses PyPI's own advisory database, often more up-to-date
+      # Running both Safety and pip-audit catches more vulnerabilities
       - name: Run pip-audit
         run: |
           pip-audit --format json --output pip-audit-report.json
         continue-on-error: true
       
+      # Step 6: Set up Node.js for frontend dependency scanning
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '18'  # Match frontend Node version
       
+      # Step 7: Scan frontend (React/TypeScript) dependencies
+      # - npm audit: Built-in npm security scanner
+      # - --audit-level=moderate: Report moderate+ severity (skip low-severity)
+      # - working-directory: Run in frontend/ where package.json lives
+      # LEARNING: Frontend has its own dependency tree separate from backend
       - name: Run npm audit (Frontend)
         working-directory: frontend
         run: |
           npm audit --audit-level=moderate --json > ../npm-audit-report.json
         continue-on-error: true
       
+      # Step 8: Save reports for review (persist across jobs)
+      # These reports can be downloaded from GitHub Actions UI
+      # In production, you'd send these to a security dashboard
       - name: Upload security reports
         uses: actions/upload-artifact@v4
         with:
@@ -60,106 +139,183 @@ jobs:
             pip-audit-report.json
             npm-audit-report.json
   
-  # SAST - Static Application Security Testing
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 2: SAST - STATIC APPLICATION SECURITY TESTING
+  # ─────────────────────────────────────────────────────────────────────────
+  # WHAT: Analyzes source code for security vulnerabilities (SQL injection, XSS, etc.)
+  # WHY: Catches vulnerabilities in YOUR code (not just dependencies)
+  # TOOLS: CodeQL (GitHub's semantic code analysis), Bandit (Python security linter)
+  # HOW: CodeQL builds a database of your code and queries it for vulnerability patterns
+  # LEARNING: SAST = "Static" because it analyzes code without running it
+  # ─────────────────────────────────────────────────────────────────────────
   sast-scan:
     name: SAST Scan
     runs-on: ubuntu-latest
+    
+    # Special permissions needed to upload security findings to GitHub Security tab
     permissions:
-      security-events: write
-      contents: read
+      security-events: write  # Upload SARIF files to Security tab
+      contents: read          # Read repository code
     
     steps:
+      # Step 1: Get code for analysis
       - name: Checkout code
         uses: actions/checkout@v4
       
+      # Step 2: Initialize CodeQL - GitHub's semantic code analyzer
+      # CodeQL: Treats code as data, builds a queryable database
+      # Think of it like SQL for code: "SELECT all SQL queries that use user input"
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
-          languages: python, javascript
-          queries: security-extended
+          languages: python, javascript     # Analyze Python backend + JS frontend
+          queries: security-extended        # Run extended security query pack (more checks)
       
+      # Step 3: Build the codebase so CodeQL can analyze compiled artifacts
+      # For Python/JS, this is minimal, but for compiled languages (C++/Java) this is crucial
       - name: Autobuild
         uses: github/codeql-action/autobuild@v3
       
+      # Step 4: Run CodeQL analysis and upload results to GitHub Security
+      # This will appear in the "Security" tab under "Code scanning alerts"
+      # LEARNING: CodeQL finds issues like:
+      # - SQL injection (building queries with user input)
+      # - XSS (rendering user input in HTML without escaping)
+      # - Path traversal (using user input in file paths)
+      # - Command injection (passing user input to shell commands)
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
       
+      # Step 5: Run Bandit - Python-specific security linter
+      # Bandit checks for Python-specific issues CodeQL might miss:
+      # - Using eval() or exec() (code injection risks)
+      # - Weak cryptography (MD5, SHA1)
+      # - Hardcoded passwords
+      # - Insecure random number generation
+      # - Unsafe YAML loading (yaml.unsafe_load)
       - name: Run Bandit (Python Security Linter)
         run: |
           pip install bandit
-          bandit -r src/ -f json -o bandit-report.json
+          bandit -r src/ -f json -o bandit-report.json  # -r = recursive scan
         continue-on-error: true
       
+      # Step 6: Save Bandit report for review
       - name: Upload Bandit report
         uses: actions/upload-artifact@v4
         with:
           name: bandit-report
           path: bandit-report.json
   
-  # Secrets scanning
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 3: SECRET SCANNING
+  # ─────────────────────────────────────────────────────────────────────────
+  # WHAT: Finds secrets accidentally committed to git (API keys, passwords, tokens)
+  # WHY: Secrets in git = compromised forever (history is immutable)
+  # TOOL: TruffleHog (scans git history for high-entropy strings and known patterns)
+  # HOW: Looks for patterns (AWS keys, JWT tokens) and entropy analysis (random-looking strings)
+  # CRITICAL: If secrets are found, they must be rotated immediately!
+  # ─────────────────────────────────────────────────────────────────────────
   secret-scan:
     name: Secret Scanning
     runs-on: ubuntu-latest
     
     steps:
+      # Step 1: Get FULL git history (not just latest commit)
+      # fetch-depth: 0 means clone entire history
+      # WHY: Secrets might be in old commits that were "fixed" in newer commits
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full history for secret scanning
+          fetch-depth: 0
       
+      # Step 2: Run TruffleHog - scans git history for secrets
+      # LEARNING: TruffleHog uses:
+      # 1. Regex patterns (matches AWS key format: AKIA...)
+      # 2. Entropy analysis (finds high-randomness strings)
+      # 3. Verification (actually tests if the secret works!)
+      # --only-verified: Only report secrets that were successfully validated
       - name: TruffleHog Secret Scan
         uses: trufflesecurity/trufflehog@main
         with:
-          path: ./
-          base: ${{ github.event.repository.default_branch }}
-          head: HEAD
-          extra_args: --debug --only-verified
+          path: ./                                              # Scan current directory
+          base: ${{ github.event.repository.default_branch }}   # Base branch to compare
+          head: HEAD                                            # Current commit
+          extra_args: --debug --only-verified                   # Debug mode + only validated secrets
   
-  # Container image scanning
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 4: CONTAINER IMAGE SCANNING
+  # ─────────────────────────────────────────────────────────────────────────
+  # WHAT: Scans Docker images for vulnerabilities in OS packages and app dependencies
+  # WHY: Container images include base OS (Ubuntu/Alpine) with its own vulnerabilities
+  # TOOL: Trivy (comprehensive vulnerability scanner from Aqua Security)
+  # HOW: Scans every layer of the Docker image filesystem
+  # LEARNING: Even if your code is secure, the base image might have vulnerabilities!
+  # ─────────────────────────────────────────────────────────────────────────
   container-scan:
     name: Container Image Scan
     runs-on: ubuntu-latest
+    
+    # Only run on push or manual trigger (not PRs) - building images is expensive
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
       
+      # Step 1: Set up Docker Buildx (enhanced Docker build engine)
+      # Buildx supports multi-platform builds and better caching
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       
+      # Step 2: Build backend Docker image (without pushing to registry)
+      # push: false = build locally for scanning only
+      # load: true = load image into Docker daemon (so Trivy can scan it)
       - name: Build backend image for scanning
         uses: docker/build-push-action@v5
         with:
-          context: .
-          file: ./infrastructure/docker/Dockerfile.backend
-          push: false
-          load: true
-          tags: marketing-agent-backend:scan
+          context: .                                          # Build context (root directory)
+          file: ./infrastructure/docker/Dockerfile.backend    # Backend Dockerfile
+          push: false                                         # Don't push to registry
+          load: true                                          # Load into local Docker
+          tags: marketing-agent-backend:scan                  # Temporary tag for scanning
       
+      # Step 3: Scan backend image with Trivy
+      # TRIVY CHECKS:
+      # - OS packages (apt/yum packages in base image)
+      # - Application dependencies (Python packages)
+      # - Known vulnerabilities in installed software
+      # SARIF format = structured findings that GitHub can parse
       - name: Run Trivy vulnerability scanner (Backend)
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: marketing-agent-backend:scan
-          format: 'sarif'
-          output: 'trivy-backend-results.sarif'
-          severity: 'CRITICAL,HIGH'
+          image-ref: marketing-agent-backend:scan     # Image to scan
+          format: 'sarif'                             # Output in SARIF format (Security Alert
+ Results Interchange Format)
+          output: 'trivy-backend-results.sarif'       # Save results here
+          severity: 'CRITICAL,HIGH'                   # Only report serious issues
       
+      # Step 4: Upload findings to GitHub Security tab
+      # Results appear under Security > Code scanning alerts
       - name: Upload Trivy results to GitHub Security
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: 'trivy-backend-results.sarif'
-          category: 'backend-container'
+          category: 'backend-container'               # Categorize in Security tab
       
+      # Step 5: Build frontend image for scanning
+      # Same process as backend, but for React/TypeScript frontend
       - name: Build frontend image for scanning
         uses: docker/build-push-action@v5
         with:
-          context: ./frontend
+          context: ./frontend                                  # Frontend directory as context
           file: ./infrastructure/docker/Dockerfile.frontend
           push: false
           load: true
           tags: marketing-agent-frontend:scan
       
+      # Step 6: Scan frontend image
+      # Frontend images often use Node.js base images (node:18-alpine)
+      # Scans for vulnerabilities in Node.js, npm packages, and OS
       - name: Run Trivy vulnerability scanner (Frontend)
         uses: aquasecurity/trivy-action@master
         with:
@@ -168,13 +324,21 @@ jobs:
           output: 'trivy-frontend-results.sarif'
           severity: 'CRITICAL,HIGH'
       
+      # Step 7: Upload frontend findings separately
       - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql- action/upload-sarif@v3
         with:
           sarif_file: 'trivy-frontend-results.sarif'
           category: 'frontend-container'
   
-  # Infrastructure as Code scanning
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 5: INFRASTRUCTURE AS CODE (IaC) SCANNING
+  # ─────────────────────────────────────────────────────────────────────────
+  # WHAT: Scans Terraform, Kubernetes, and Dockerfiles for misconfigurations
+  # WHY: Infrastructure code can have security issues (overly permissive IAM, exposed ports)
+  # TOOL: Checkov (policy-as-code scanner from Bridgecrew/Palo Alto)
+  # EXAMPLES: S3 bucket without encryption, security groups allowing 0.0.0.0/0, root containers
+  # ─────────────────────────────────────────────────────────────────────────
   iac-scan:
     name: IaC Security Scan
     runs-on: ubuntu-latest
@@ -183,23 +347,42 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
+      # Run Checkov - scans infrastructure code for security misconfigurations
+      # CHECKOV POLICY CHECKS:
+      # - Terraform: Insecure resource configurations (overly permissive IAM, unencrypted storage)
+      # - Kubernetes: Security context issues (running as root, privileged containers)
+      # - Docker: Security anti-patterns (using :latest tag, COPY instead of ADD)
+      # LEARNING: Infrastructure security is just as important as application security!
       - name: Run Checkov (IaC Scanner)
         uses: bridgecrewio/checkov-action@master
         with:
-          directory: infrastructure/
-          framework: terraform,kubernetes,dockerfile
-          output_format: sarif
+          directory: infrastructure/              # Scan infrastructure/ directory
+          framework: terraform,kubernetes,dockerfile  # Frameworks to check
+          output_format: sarif                    # SARIF format for GitHub integration
           output_file_path: checkov-results.sarif
-          skip_check: CKV_DOCKER_2,CKV_DOCKER_3
+          skip_check: CKV_DOCKER_2,CKV_DOCKER_3  # Skip specific checks if needed
+                      # CKV_DOCKER_2 = HEALTHCHECK instruction
+                      # CKV_DOCKER_3 = USER instruction (non-root user)
       
+      # Upload results to GitHub Security tab
       - name: Upload Checkov results
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: always()                              # Upload even if Checkov found issues
         with:
           sarif_file: checkov-results.sarif
           category: 'iac'
   
-  # License compliance check
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 6: LICENSE COMPLIANCE SCANNING
+  # ─────────────────────────────────────────────────────────────────────────
+  # WHAT: Checks licenses of all dependencies (Python & Node.js)
+  # WHY: Some licenses have legal requirements (GPL requires open-sourcing your code)
+  # HOW: Extracts license info from package metadata
+  # LEARNING: Common licenses:
+  # - MIT/Apache: Very permissive (can use commercially)
+  # - GPL: "Copyleft" (must open-source your code if you distribute)
+  # - AGPL: Like GPL but triggered by network use (running as SaaS)
+  # ─────────────────────────────────────────────────────────────────────────
   license-scan:
     name: License Compliance
     runs-on: ubuntu-latest
@@ -208,27 +391,34 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
+      # Step 1: Set up Python for license scanning
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       
+      # Step 2: Install pip-licenses tool and project dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pip-licenses
-          pip install -e .
+          pip install pip-licenses  # Tool to extract license from Python packages
+          pip install -e .           # Install project + all dependencies
       
+      # Step 3: Generate Python dependency license report
+      # Creates both JSON (machine-readable) and Markdown (human-readable)
       - name: Check Python licenses
         run: |
           pip-licenses --format=json --output-file=python-licenses.json
           pip-licenses --format=markdown --output-file=python-licenses.md
       
+      # Step 4: Set up Node.js for frontend license scanning
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
       
+      # Step 5: Scan npm package licenses
+      # license-checker: npm tool to extract licenses from node_modules
       - name: Check npm licenses
         working-directory: frontend
         run: |
@@ -236,6 +426,8 @@ jobs:
           license-checker --json --out ../npm-licenses.json
           license-checker --markdown --out ../npm-licenses.md
       
+      # Step 6: Upload all license reports for review
+      # Legal/compliance teams can review these to ensure license compatibility
       - name: Upload license reports
         uses: actions/upload-artifact@v4
         with:
@@ -245,3 +437,35 @@ jobs:
             python-licenses.md
             npm-licenses.json
             npm-licenses.md
+
+# ═══════════════════════════════════════════════════════════════════════════
+# END OF SECURITY SCANNING WORKFLOW
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# SUMMARY OF SECURITY LAYERS:
+# ────────────────────────────
+# 1. Dependency Scanning   → Python/Node.js packages (CVEs in libraries)
+# 2. SAST Scanning         → Your source code (injection flaws, XSS)
+# 3. Secret Scanning       → Git history (API keys, passwords)
+# 4. Container Scanning    → Docker images (OS packages, base image CVEs)
+# 5. IaC Scanning          → Terraform/K8s/Dockerfile (misconfigurations)
+# 6. License Scanning      → Legal compliance (GPL, Apache, MIT, etc.)
+#
+# HOW TO USE:
+# ──────────
+# 1. View findings: GitHub repo → Security tab → Code scanning alerts
+# 2. Download reports: GitHub Actions run → Artifacts section
+# 3. Fix vulnerabilities: Update dependencies, fix code, rotate secrets
+# 4. Re-run: Push changes → security scan runs automatically
+#
+# BEST PRACTICES:
+# ───────────────
+# ✓ Run security scans on EVERY pull request
+# ✓ Run daily scans (new CVEs are published constantly)
+# ✓ Fix CRITICAL and HIGH severity issues immediately
+# ✓ Never commit secrets - use GitHub Secrets or environment variables
+# ✓ Keep base images updated (FROM python:3.11-slim-bookworm)
+# ✓ Use specific version tags, never :latest in production
+# ✓ Review license reports before adding new dependencies
+#
+# ═══════════════════════════════════════════════════════════════════════════

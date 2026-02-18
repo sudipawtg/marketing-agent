@@ -1,53 +1,183 @@
+################################################################################
+# CONTINUOUS DEPLOYMENT (CD) PIPELINE
+################################################################################
+#
+# PURPOSE:
+#   Automatically deploy the application to staging, production, or canary
+#   environments after code passes CI checks.
+#
+# WHAT IS CD?
+#   Continuous Deployment is the practice of automatically deploying code
+#   changes to production (or staging) environments after they pass all tests.
+#   This eliminates manual deployment steps and ensures faster, more reliable
+#   releases.
+#
+# DEPLOYMENT ENVIRONMENTS:
+#   1. STAGING: Test environment that mimics production
+#      - Deployed automatically on every merge to main
+#      - Used for final testing before production
+#      - Can be accessed by team members for QA
+#
+#   2. PRODUCTION: Live environment serving real users
+#      - Deployed when a version tag is created (v1.0.0, v2.1.3, etc.)
+#      - Or manually triggered via workflow_dispatch
+#      - Highest security and reliability standards
+#
+#   3. CANARY: Partial production deployment (10% of traffic)
+#      - Tests new features with a small subset of users
+#      - If metrics are good, promoted to full production
+#      - If issues detected, automatically rolled back
+#
+# DEPLOYMENT FLOW:
+#   Developer → CI Tests → Build Images → Deploy Staging → Deploy Production
+#   \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n#   Push code → Runs tests → Creates Docker images → Tests in staging → Goes live
+#
+# KUBERNETES DEPLOYMENT:
+#   This workflow deploys to Kubernetes clusters using kubectl commands.
+#   Kubernetes manages containers across multiple servers, handles scaling,
+#   and ensures high availability.
+#
+################################################################################
+
 name: CD Pipeline
 
+# TRIGGER CONFIGURATION
+# Defines when this workflow should run
 on:
+  # Trigger on pushes to main branch
+  # This automatically deploys to staging
   push:
     branches: [ main ]
+    
+    # Trigger on version tags (e.g., v1.0.0, v2.1.3)
+    # This triggers production deployment
+    # Semantic versioning: vMAJOR.MINOR.PATCH
     tags:
-      - 'v*.*.*'
+      - 'v*.*.*'  # Matches v1.0.0, v1.2.3, v2.0.0, etc.
+  
+  # MANUAL TRIGGER
+  # Allows deploying to any environment via GitHub UI
+  # Useful for hotfixes, rollbacks, or testing
   workflow_dispatch:
     inputs:
       environment:
         description: 'Environment to deploy to'
         required: true
-        type: choice
+        type: choice       # Creates a dropdown menu
         options:
-          - staging
-          - production
-          - canary
+          - staging        # Test environment
+          - production     # Live environment
+          - canary         # Gradual rollout
 
+# ENVIRONMENT VARIABLES
+# Available to all jobs in this workflow
 env:
+  # GitHub Container Registry (ghcr.io)
+  # Free for public repos, integrated with GitHub
   REGISTRY: ghcr.io
+  
+  # Image name includes org and repo (e.g., myorg/myrepo)
+  # github.repository = "owner/repo-name"
   IMAGE_NAME: ${{ github.repository }}
 
+################################################################################
+# JOBS
+################################################################################
+
 jobs:
-  # Build and push Docker images
+  ############################################################################
+  # JOB 1: BUILD AND PUSH DOCKER IMAGES
+  ############################################################################
+  #
+  # PURPOSE:
+  #   Build production Docker images and push them to container registry
+  #
+  # WHAT IT DOES:
+  #   1. Authenticates with GitHub Container Registry (ghcr.io)
+  #   2. Extracts image metadata (tags, labels) based on git context
+  #   3. Builds multi-platform Docker images (AMD64 + ARM64)
+  #   4. Pushes images to registry for deployment
+  #   5. Outputs image tags for use in deployment jobs
+  #
+  # WHY PUSH TO A REGISTRY?
+  #   - Kubernetes pulls images from registries (not local builds)
+  #   - Registries provide versioning and rollback capability
+  #   - Images can be deployed to multiple servers
+  #   - Registries scan images for security vulnerabilities
+  #
+  # IMAGE TAGGING STRATEGY:
+  #   - branch name (e.g., main, develop)
+  #   - semantic version (e.g., 1.2.3)
+  #   - git SHA (e.g., main-abc123f)
+  #   - latest (only for default branch)
+  #
+  ############################################################################
+  
   build-and-push:
     name: Build & Push Docker Images
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     
+    # PERMISSIONS
+    # This job needs specific permissions to work with GitHub registry
+    permissions:
+      contents: read      # Read repository code
+      packages: write     # Push images to ghcr.io
+    
+    # OUTPUTS
+    # These values can be used by dependent jobs (deploy-staging, etc.)
+    # Allows deployment jobs to know which image to deploy
     outputs:
-      backend-image: ${{ steps.meta-backend.outputs.tags }}
-      frontend-image: ${{ steps.meta-frontend.outputs.tags }}
-      version: ${{ steps.meta-backend.outputs.version }}
+      backend-image: ${{ steps.meta-backend.outputs.tags }}   # Full backend image tag
+      frontend-image: ${{ steps.meta-frontend.outputs.tags }}  # Full frontend image tag
+      version: ${{ steps.meta-backend.outputs.version }}       # Version number
     
     steps:
+      # STEP 1: CHECKOUT CODE
       - name: Checkout code
         uses: actions/checkout@v4
       
+      # STEP 2: SETUP DOCKER BUILDX
+      # Buildx enables multi-platform builds and advanced features
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       
+      # STEP 3: LOGIN TO CONTAINER REGISTRY
+      # Authenticates with GitHub Container Registry (ghcr.io)
+      # 
+      # CREDENTIALS:
+      # - username: github.actor = the user who triggered the workflow
+      # - password: GITHUB_TOKEN = auto-generated token with registry access
+      # 
+      # SECURITY NOTE:
+      # GITHUB_TOKEN is automatically provided and expires after the workflow
+      # No need to create or store it manually
+      #
       - name: Log in to Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          registry: ${{ env.REGISTRY }}                  # ghcr.io
+          username: ${{ github.actor }}                  # Your GitHub username
+          password: ${{ secrets.GITHUB_TOKEN }}          # Auto-generated token
       
+      # STEP 4: EXTRACT METADATA FOR BACKEND IMAGE
+      # Generates image tags and labels based on git context
+      # 
+      # TAG TYPES EXPLAINED:
+      # - type=ref,event=branch    → Creates tag from branch name (e.g., "main")
+      # - type=ref,event=pr        → Creates tag from PR number (e.g., "pr-123")
+      # - type=semver,pattern=...  → Parses semantic version tags (e.g., "1.2.3")
+      # - type=sha,prefix=...      → Creates tag from git commit SHA
+      # - type=raw,value=latest    → Adds "latest" tag for default branch
+      # 
+      # EXAMPLES:
+      #   Push to main branch   → ghcr.io/myorg/myrepo-backend:main
+      #   Push to develop       → ghcr.io/myorg/myrepo-backend:develop
+      #   Tag v1.2.3           → ghcr.io/myorg/myrepo-backend:1.2.3
+      #   Tag v1.2.3           → ghcr.io/myorg/myrepo-backend:1.2
+      #   Commit abc123        → ghcr.io/myorg/myrepo-backend:main-abc123
+      #
+      # id: meta-backend = gives this step an ID so others can reference its outputs
+      #
       - name: Extract metadata for backend
         id: meta-backend
         uses: docker/metadata-action@v5
@@ -61,18 +191,40 @@ jobs:
             type=sha,prefix={{branch}}-
             type=raw,value=latest,enable={{is_default_branch}}
       
+      # STEP 5: BUILD AND PUSH BACKEND IMAGE
+      # Creates Docker image and pushes to registry
+      # 
+      # MULTI-PLATFORM BUILD:
+      # - linux/amd64: Intel/AMD processors (most cloud servers)
+      # - linux/arm64: ARM processors (AWS Graviton, Apple Silicon)
+      # Building for both ensures maximum compatibility
+      # 
+      # PARAMETERS:
+      # - context: . = build context is repository root
+      # - file: path to Dockerfile
+      # - push: true = push to registry (unlike CI which just builds)
+      # - tags: all tags generated by metadata action
+      # - labels: metadata labels (version, commit SHA, etc.)
+      # - cache-from/cache-to: use GitHub Actions cache for speed
+      # 
+      # BUILD TIME:
+      # - First build: 5-10 minutes
+      # - Cached builds: 1-2 minutes
+      #
       - name: Build and push backend image
         uses: docker/build-push-action@v5
         with:
-          context: .
+          context: .                                    # Root directory
           file: ./infrastructure/docker/Dockerfile.backend
-          push: true
-          tags: ${{ steps.meta-backend.outputs.tags }}
-          labels: ${{ steps.meta-backend.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64,linux/arm64
+          push: true                                    # Push to registry
+          tags: ${{ steps.meta-backend.outputs.tags }}  # Tags from metadata
+          labels: ${{ steps.meta-backend.outputs.labels }}  # Labels from metadata
+          cache-from: type=gha                          # Load cache
+          cache-to: type=gha,mode=max                   # Save cache
+          platforms: linux/amd64,linux/arm64            # Multi-platform
       
+      # STEP 6: EXTRACT METADATA FOR FRONTEND IMAGE
+      # Same tagging strategy as backend
       - name: Extract metadata for frontend
         id: meta-frontend
         uses: docker/metadata-action@v5
@@ -86,6 +238,9 @@ jobs:
             type=sha,prefix={{branch}}-
             type=raw,value=latest,enable={{is_default_branch}}
       
+      # STEP 7: BUILD AND PUSH FRONTEND IMAGE
+      # Creates and pushes frontend Docker image
+      # Context is ./frontend because package.json is there
       - name: Build and push frontend image
         uses: docker/build-push-action@v5
         with:
@@ -98,35 +253,150 @@ jobs:
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
   
-  # Deploy to Staging
+  ############################################################################
+  # JOB 2: DEPLOY TO STAGING
+  ############################################################################
+  #
+  # PURPOSE:
+  #   Deploy the application to staging environment for final testing
+  #
+  # WHAT IS STAGING?
+  #   Staging is a production-like environment where:
+  #   - QA team tests new features
+  #   - Product managers review changes
+  #   - Automated tests run against real infrastructure
+  #   - Final validation before production release
+  #
+  # DEPLOYMENT PROCESS:
+  #   1. Connect to Kubernetes cluster (kubectl)
+  #   2. Run database migrations (update DB schema)
+  #   3. Update backend deployment with new image
+  #   4. Update frontend deployment with new image
+  #   5. Wait for deployments to be ready (health checks)
+  #   6. Run post-deployment tests
+  #
+  # KUBERNETES ROLLING UPDATE:
+  #   Kubernetes gradually replaces old pods with new ones:
+  #   - Creates new pod with new image
+  #   - Waits for new pod to be healthy
+  #   - Routes traffic to new pod
+  #   - Terminates old pod
+  #   - Repeats until all pods are updated
+  #   This ensures zero downtime during deployment!
+  #
+  # WHEN THIS RUNS:
+  #   - Automatically after build-and-push succeeds
+  #   - Only if pushing to main branch OR manual trigger for staging
+  #
+  ############################################################################
+  
   deploy-staging:
     name: Deploy to Staging
     runs-on: ubuntu-latest
+    
+    # DEPENDENCY: Wait for images to be built and pushed
     needs: build-and-push
+    
+    # CONDITIONAL EXECUTION
+    # Only run if:
+    # - Pushing to main branch, OR
+    # - Manual trigger with staging selected
     if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'staging'
+    
+    # ENVIRONMENT PROTECTION
+    # GitHub environments can require:
+    # - Manual approval before deployment
+    # - Specific reviewers
+    # - Branch protection rules
+    # - Time delays
     environment:
-      name: staging
-      url: https://staging.marketing-agent.example.com
+      name: staging                                # Environment name in GitHub
+      url: https://staging.marketing-agent.example.com  # URL to deployed app
     
     steps:
+      # STEP 1: CHECKOUT CODE
       - name: Checkout code
         uses: actions/checkout@v4
       
+      # STEP 2: SETUP KUBECTL
+      # kubectl is the command-line tool for Kubernetes
+      # It lets you deploy apps, inspect cluster resources, and view logs
+      # 
+      # VERSION: v1.28.0 = Kubernetes version (match your cluster version)
+      #
       - name: Set up kubectl
         uses: azure/setup-kubectl@v3
         with:
-          version: 'v1.28.0'
+          version: 'v1.28.0'                          # Kubernetes CLI version
       
+      # STEP 3: CONFIGURE KUBECTL
+      # Connects kubectl to your Kubernetes cluster
+      # 
+      # KUBECONFIG FILE:
+      # Contains cluster URL, certificates, and credentials
+      # Stored as a base64-encoded secret on GitHub
+      # 
+      # HOW TO CREATE:
+      # 1. Get kubeconfig from your cluster (AWS EKS, GCP GKE, etc.)
+      # 2. Encode it: cat kubeconfig.yaml | base64
+      # 3. Store as GitHub secret: KUBE_CONFIG_STAGING
+      # 
+      # SECURITY:
+      # - Never commit kubeconfig to git!
+      # - Use separate configs for staging and production
+      # - Rotate credentials regularly
+      #
       - name: Configure kubectl
         run: |
-          mkdir -p $HOME/.kube
+          mkdir -p $HOME/.kube                        # Create kubectl config directory
           echo "${{ secrets.KUBE_CONFIG_STAGING }}" | base64 -d > $HOME/.kube/config
+          # Decodes base64 secret and saves as kubectl config
       
+      # STEP 4: RUN DATABASE MIGRATIONS
+      # Updates database schema before deploying new code
+      # 
+      # WHAT ARE MIGRATIONS?
+      # Migrations are version-controlled database schema changes:
+      # - Add new tables or columns
+      # - Modify existing columns
+      # - Create indexes
+      # - Add constraints
+      # 
+      # WHY RUN BEFORE DEPLOYMENT?
+      # - New code expects the updated schema
+      # - Running migrations first prevents errors
+      # - Alembic tracks which migrations have run
+      # 
+      # COMMAND BREAKDOWN:
+      # kubectl exec = run command in a pod
+      # -n staging = in the staging namespace
+      # deployment/marketing-agent-backend = in this deployment
+      # -- = separates kubectl args from the command to run
+      # alembic upgrade head = run all pending migrations
+      #
       - name: Run database migrations
         run: |
           kubectl exec -n staging deployment/marketing-agent-backend -- \
             alembic upgrade head
       
+      # STEP 5: UPDATE BACKEND DEPLOYMENT
+      # Updates backend pods with new Docker image
+      # 
+      # KUBERNETES ROLLING UPDATE:
+      # - Starts new pod with new image
+      # - Waits for health checks to pass
+      # - Routes traffic to new pod
+      # - Terminates old pod
+      # - Repeats until all pods updated
+      # 
+      # kubectl set image = update container image
+      # deployment/marketing-agent-backend = deployment to update
+      # backend= = name of container in the pod
+      # needs.build-and-push.outputs.backend-image = new image from build job
+      # 
+      # kubectl rollout status = wait for rollout to complete
+      # Ensures deployment succeeds before continuing
+      #
       - name: Update backend deployment
         run: |
           kubectl set image deployment/marketing-agent-backend \
@@ -134,6 +404,9 @@ jobs:
             -n staging
           kubectl rollout status deployment/marketing-agent-backend -n staging
       
+      # STEP 6: UPDATE FRONTEND DEPLOYMENT
+      # Same process as backend, but for frontend pods
+      # Frontend and backend can update independently
       - name: Update frontend deployment
         run: |
           kubectl set image deployment/marketing-agent-frontend \
@@ -141,6 +414,24 @@ jobs:
             -n staging
           kubectl rollout status deployment/marketing-agent-frontend -n staging
       
+      # STEP 7: HEALTH CHECK
+      # Waits for deployments to be fully available
+      # 
+      # kubectl wait = block until condition is met
+      # --for=condition=available = all replicas are ready and healthy
+      # --timeout=300s = fail if not ready within 5 minutes
+      # 
+      # WHAT IS "AVAILABLE"?
+      # - All pods are running
+      # - Health checks (liveness/readiness) pass
+      # - Minimum replicas are running
+      # - Update strategy constraints satisfied
+      # 
+      # If health checks fail:
+      # - Deployment stops automatically
+      # - Old pods keep running (no downtime)
+      # - Workflow fails and notifies team
+      #
       - name: Health check
         run: |
           kubectl wait --for=condition=available --timeout=300s \
@@ -148,46 +439,160 @@ jobs:
           kubectl wait --for=condition=available --timeout=300s \
             deployment/marketing-agent-frontend -n staging
       
+      # STEP 8: POST-DEPLOYMENT TESTS
+      # Run automated tests against the deployed application
+      # 
+      # EXAMPLES OF POST-DEPLOYMENT TESTS:
+      # - API health endpoint check
+      # - Database connectivity test
+      # - Critical user flows (login, create campaign, etc.)
+      # - Performance smoke tests
+      # 
+      # WHY POST-DEPLOYMENT TESTS?
+      # - Verify deployment succeeded functionally
+      # - Catch environment-specific issues
+      # - Validate integrations with external services
+      # - Ensure data migrations worked correctly
+      #
       - name: Run post-deployment tests
         run: |
           # Add your post-deployment test commands here
           echo "Running post-deployment tests..."
+          # Example: curl -f https://staging.marketing-agent.example.com/health
+          # Example: pytest tests/deployment/ --env=staging
   
-  # Deploy to Production
+  ############################################################################
+  # JOB 3: DEPLOY TO PRODUCTION
+  ############################################################################
+  #
+  # PURPOSE:
+  #   Deploy application to production environment (live users)
+  #
+  # PRODUCTION VS STAGING:
+  #   Production is the live environment where:
+  #   - Real users access the application
+  #   - Real data is stored and processed
+  #   - Highest uptime and performance requirements
+  #   - Changes are carefully controlled and monitored
+  #
+  # SAFETY MEASURES:
+  #   1. REQUIRES staging deployment to succeed first
+  #   2. Only deploys on version tags (v1.0.0, etc.)
+  #   3. Creates database backup before deployment
+  #   4. Can require manual approval (GitHub environment protection)
+  #   5. Health checks ensure deployment succeeded
+  #   6. Verification step checks API endpoints
+  #
+  # WHEN THIS RUNS:
+  #   - When you create a git tag like v1.2.3
+  #   - Or manually via workflow_dispatch with "production" selected
+  #   - ONLY if staging deployment succeeded
+  #
+  # PRODUCTION DEPLOYMENT CHECKLIST:
+  #   ✅ All tests passing in CI
+  #   ✅ Staging deployment successful
+  #   ✅ QA team has tested staging
+  #   ✅ Database backup created
+  #   ✅ Rollback plan ready
+  #   ✅ Team notified of deployment
+  #
+  ############################################################################
+  
   deploy-production:
     name: Deploy to Production
     runs-on: ubuntu-latest
+    
+    # DEPENDENCIES:
+    # - build-and-push: Need images built
+    # - deploy-staging: Staging must succeed first (safety check)
     needs: [build-and-push, deploy-staging]
+    
+    # CONDITIONAL EXECUTION:
+    # Only run if:
+    # - A version tag was pushed (refs/tags/v1.2.3), OR
+    # - Manual trigger with "production" selected
+    # 
+    # VERSION TAG EXAMPLE:
+    # git tag v1.2.3
+    # git push origin v1.2.3
     if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.environment == 'production'
+    
+    # ENVIRONMENT PROTECTION:
+    # In GitHub Settings, you can configure:
+    # - Required reviewers (need approval before deploying)
+    # - Wait timer (delay before deploying)
+    # - Deployment branches (only allow main)
     environment:
       name: production
       url: https://marketing-agent.example.com
     
     steps:
+      # STEP 1: CHECKOUT CODE
       - name: Checkout code
         uses: actions/checkout@v4
       
+      # STEP 2: SETUP KUBECTL
       - name: Set up kubectl
         uses: azure/setup-kubectl@v3
         with:
           version: 'v1.28.0'
       
+      # STEP 3: CONFIGURE KUBECTL FOR PRODUCTION
+      # Uses production kubeconfig secret (separate from staging)
       - name: Configure kubectl
         run: |
           mkdir -p $HOME/.kube
           echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > $HOME/.kube/config
       
+      # STEP 4: CREATE DATABASE BACKUP
+      # CRITICAL SAFETY STEP!
+      # Always backup database before production deployment
+      # 
+      # BACKUP STRATEGY:
+      # - pg_dump = PostgreSQL backup utility
+      # - Creates full database snapshot
+      #  - Includes schema and data
+      # - Timestamped filename for identification
+      # 
+      # BACKUP FILE FORMAT:
+      # backup-20260218-143022.sql = backup taken on Feb 18, 2026 at 14:30:22
+      # 
+      # IMPORTANT:
+      # In production, you should:
+      # - Upload backup to S3/GCS/Azure Blob Storage
+      # - Verify backup integrity
+      # - Keep backups for required retention period
+      # - Test restore process regularly
+      # 
+      # ROLLBACK PLAN:
+      # If deployment fails, you can restore from this backup
+      #
       - name: Create backup
         run: |
           # Backup database before deployment
           kubectl exec -n production deployment/postgres -- \
             pg_dump -U postgres marketing_agent > backup-$(date +%Y%m%d-%H%M%S).sql
+          # TODO: Upload backup to cloud storage
+          # aws s3 cp backup-*.sql s3://my-backups/
       
+      # STEP 5: RUN DATABASE MIGRATIONS
+      # Update production database schema
+      # Same process as staging, but extra care required
+      # 
+      # MIGRATION BEST PRACTICES:
+      # - Test migrations in staging first ✅ (already done!)
+      # - Make migrations backward compatible when possible
+      # - Plan for rollback if migration fails
+      # - Monitor migration duration (long migrations = more risk)
+      #
       - name: Run database migrations
         run: |
           kubectl exec -n production deployment/marketing-agent-backend -- \
             alembic upgrade head
       
+      # STEP 6: UPDATE BACKEND DEPLOYMENT
+      # Rolling update of backend pods
+      # Kubernetes ensures zero downtime
       - name: Update backend deployment
         run: |
           kubectl set image deployment/marketing-agent-backend \
@@ -195,6 +600,7 @@ jobs:
             -n production
           kubectl rollout status deployment/marketing-agent-backend -n production
       
+      # STEP 7: UPDATE FRONTEND DEPLOYMENT
       - name: Update frontend deployment
         run: |
           kubectl set image deployment/marketing-agent-frontend \
@@ -202,6 +608,8 @@ jobs:
             -n production
           kubectl rollout status deployment/marketing-agent-frontend -n production
       
+      # STEP 8: HEALTH CHECK
+      # Ensures all pods are healthy before considering deployment successful
       - name: Health check
         run: |
           kubectl wait --for=condition=available --timeout=300s \
@@ -209,56 +617,348 @@ jobs:
           kubectl wait --for=condition=available --timeout=300s \
             deployment/marketing-agent-frontend -n production
       
+      # STEP 9: VERIFY DEPLOYMENT
+      # Additional verification beyond Kubernetes health checks
+      # 
+      # VERIFICATION CHECKS:
+      # - API responds correctly
+      # - Critical endpoints work
+      # - Response times are acceptable
+      # - No immediate errors in logs
+      # 
+      # curl -f = fail on HTTP errors (4xx, 5xx)
+      # || exit 1 = fail the workflow if check fails
+      #
       - name: Verify deployment
         run: |
           # Check API health endpoint
           curl -f https://marketing-agent.example.com/health || exit 1
+          # Add more verification:
+          # curl -f https://marketing-agent.example.com/api/campaigns
+          # Check metrics, logs, etc.
       
+      # STEP 10: NOTIFY TEAM
+      # Send notifications about successful deployment
+      # 
+      # if: success() = only runs if all previous steps succeeded
+      # 
+      # NOTIFICATION OPTIONS:
+      # - Slack webhook
+      # - Discord webhook
+      # - Email
+      # - PagerDuty
+      # - Microsoft Teams
+      # - Custom webhook
+      # 
+      # EXAMPLE SLACK NOTIFICATION:
+      # curl -X POST -H 'Content-type: application/json' \
+      #   --data '{"text":"Production deployed: v1.2.3"}' \
+      #   ${{ secrets.SLACK_WEBHOOK_URL }}
+      #
       - name: Notify deployment
         if: success()
         run: |
           echo "Deployment to production successful!"
           # Add notification logic (Slack, email, etc.)
+          # Example:
+          # curl -X POST ${{ secrets.SLACK_WEBHOOK }} \
+          #   -d '{"text": "✅ Production deployment successful: ${{ github.ref }}"}'
   
-  # Canary Deployment
+  ############################################################################
+  # JOB 4: DEPLOY CANARY
+  ############################################################################
+  #
+  # PURPOSE:
+  #   Gradually roll out new version to a small percentage of users
+  #
+  # WHAT IS CANARY DEPLOYMENT?
+  #   Named after "canary in a coal mine" - early warning system
+  #   
+  #   CANARY STRATEGY:
+  #   1. Deploy new version to separate canary pods
+  #   2. Route 10% of traffic to canary (90% to stable)
+  #   3. Monitor metrics: error rates, latency, user complaints
+  #   4. If metrics good → gradually increase traffic to 100%
+  #   5. If metrics bad → immediately rollback to stable version
+  #
+  # TRAFFIC ROUTING:
+  #   ┌─────────────────────────┐
+  #   │   Load Balancer        │
+  #   └───────┬─────────────────┘
+  #          │
+  #    ┌─────┼───────────┐
+  #    │ 90%      10% │
+  #    │                 │
+  # ┌──┴──┐   ┌─────┴─────┐
+  # │Stable│   │ Canary     │
+  # │ v1.0 │   │ v1.1       │
+  # │(Safe)│   │ (Testing) │
+  # └──────┘   └────────────┘
+  #
+  # WHY USE CANARY DEPLOYMENTS?
+  #   - Minimize blast radius of bugs
+  #   - Test with real users in production
+  #   - Quick rollback if issues detected
+  #   - Gradual confidence building
+  #   - Reduce deployment risk
+  #
+  # METRICS TO MONITOR:
+  #   - Error rate (should stay same or decrease)
+  #   - Response time / latency (should stay same)
+  #   - CPU / Memory usage
+  #   - User complaints / support tickets
+  #   - Business metrics (conversions, revenue)
+  #
+  # WHEN THIS RUNS:
+  #   - Only via manual workflow_dispatch with "canary" selected
+  #   - Typically used for risky changes
+  #
+  ############################################################################
+  
   deploy-canary:
     name: Deploy Canary
     runs-on: ubuntu-latest
+    
+    # DEPENDENCY: Wait for images to be built
+    # NOTE: Doesn't wait for staging (canary is independent)
     needs: build-and-push
+    
+    # CONDITIONAL: Only when manually triggered with canary option
     if: github.event.inputs.environment == 'canary'
+    
     environment:
       name: canary
       url: https://canary.marketing-agent.example.com
     
     steps:
+      # STEP 1: CHECKOUT CODE
       - name: Checkout code
         uses: actions/checkout@v4
       
+      # STEP 2: SETUP KUBECTL
       - name: Set up kubectl
         uses: azure/setup-kubectl@v3
         with:
           version: 'v1.28.0'
       
+      # STEP 3: CONFIGURE KUBECTL
+      # Uses production kubeconfig because canary deploys to production cluster
+      # Canary pods run alongside stable pods in production namespace
       - name: Configure kubectl
         run: |
           mkdir -p $HOME/.kube
           echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > $HOME/.kube/config
       
+      # STEP 4: DEPLOY CANARY
+      # Creates separate canary deployment with traffic splitting
+      # 
+      # TRAFFIC SPLITTING:
+      # Kubernetes Ingress or Service Mesh (Istio, Linkerd) splits traffic:
+      # - 90% to stable deployment (marketing-agent-backend)
+      # - 10% to canary deployment (marketing-agent-backend-canary)
+      # 
+      # CANARY CONFIGURATION:
+      # infrastructure/k8s/canary/ contains:
+      # - Canary deployment manifest
+      # - Traffic split rules
+      # - Monitoring configuration
+      # 
+      # kubectl apply = create or update Kubernetes resources
+      # kubectl set image = update canary deployment with new image
+      #
       - name: Deploy canary (10% traffic)
         run: |
-          kubectl apply -f infrastructure/k8s/canary/
+          kubectl apply -f infrastructure/k8s/canary/    # Apply canary config
           kubectl set image deployment/marketing-agent-backend-canary \
             backend=${{ needs.build-and-push.outputs.backend-image }} \
             -n production
       
+      # STEP 5: MONITOR CANARY METRICS
+      # Watch canary performance for a period
+      # 
+      # WHAT TO MONITOR:
+      # - Error rate: Compare canary vs stable
+      # - Latency: p50, p95, p99 percentiles
+      # - Resource usage: CPU, memory
+      # - Custom metrics: business KPIs
+      # 
+      # MONITORING TOOLS:
+      # - Prometheus + Grafana
+      # - Datadog, New Relic, Dynatrace
+      # - Cloud provider monitoring
+      # - Custom scripts
+      # 
+      # MONITORING DURATION:
+      # - 5 minutes (current): Quick sanity check
+      # - 30 minutes: Better confidence
+      # - 2 hours: High confidence
+      # - 24 hours: Very high confidence
+      # 
+      # Longer monitoring = more confidence but slower rollout
+      #
       - name: Monitor canary metrics
         run: |
           echo "Monitoring canary deployment..."
           sleep 300  # Monitor for 5 minutes
-          # Add metric checks here
+          # TODO: Add actual metric checks
+          # Example with Prometheus:
+          # CANARY_ERRORS=$(curl -s 'http://prometheus:9090/api/v1/query?query=rate(http_errors{deployment="canary"}[5m])')
+          # STABLE_ERRORS=$(curl -s 'http://prometheus:9090/api/v1/query?query=rate(http_errors{deployment="stable"}[5m])')
+          # if [ "$CANARY_ERRORS" -gt "$STABLE_ERRORS" ]; then exit 1; fi
       
+      # STEP 6: PROMOTE OR ROLLBACK
+      # Decide whether to proceed based on metrics
+      # 
+      # AUTOMATED DECISION CRITERIA:
+      # ✅ PROMOTE if:
+      #   - Error rate <= stable version
+      #   - Latency <= stable version + threshold
+      #   - No critical alerts
+      #   - User feedback positive
+      # 
+      # ❌ ROLLBACK if:
+      #   - Error rate significantly higher
+      #   - Latency significantly higher
+      #   - Critical alerts triggered
+      #   - User complaints spike
+      # 
+      # PROMOTION STRATEGY:
+      # 1. Increase canary traffic: 10% → 25% → 50% → 100%
+      # 2. Monitor after each increase
+      # 3. If any stage fails, rollback to previous
+      # 4. Once at 100%, decommission old version
+      # 
+      # ROLLBACK:
+      # kubectl apply -f infrastructure/k8s/production/  # Revert to stable
+      # kubectl delete deployment marketing-agent-backend-canary  # Remove canary
+      #
       - name: Promote or rollback
         run: |
           # Check error rates, latency, etc.
           # If metrics are good, promote; otherwise rollback
           echo "Canary analysis complete"
+          # TODO: Implement promotion logic
+          # Promotion:
+          # kubectl patch ingress marketing-agent -n production --type merge \
+          #   -p '{"spec":{"rules":[{"http":{"paths":[{"backend":{"service":{"name":"canary","port":{"number":80}}},"weight":25}]}}]}}'
+          # Rollback:
+          # kubectl delete deployment marketing-agent-backend-canary -n production
+
+################################################################################
+# END OF CD PIPELINE
+################################################################################
+#
+# DEPLOYMENT SUMMARY:
+#
+# WORKFLOW EXECUTION PATHS:
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# 1. PUSH TO MAIN:
+#    Push → Build Images → Deploy Staging → Wait for approval → Done
+#
+# 2. CREATE VERSION TAG:
+#    Tag v1.2.3 → Build Images → Deploy Staging → Deploy Production
+#
+# 3. MANUAL STAGING:
+#    Trigger → Select "staging" → Build Images → Deploy Staging
+#
+# 4. MANUAL PRODUCTION:
+#    Trigger → Select "production" → Build Images → Deploy Staging → Deploy Production
+#
+# 5. CANARY DEPLOYMENT:
+#    Trigger → Select "canary" → Build Images → Deploy Canary → Monitor → Promote/Rollback
+#
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# KEY CONCEPTS LEARNED:
+#
+# 1. CONTINUOUS DEPLOYMENT:
+#    Automatically deploy code changes after passing all tests
+#    Reduces manual work and human error
+#
+# 2. CONTAINER REGISTRIES:
+#    Store Docker images with versioning
+#    Enable deploying same image to multiple environments
+#
+# 3. KUBERNETES DEPLOYMENTS:
+#    Manage application lifecycle in containers
+#    Provide rolling updates, health checks, and self-healing
+#
+# 4. ENVIRONMENT PROGRESSION:
+#    Development → Staging → Production
+#    Each environment validates changes before next stage
+#
+# 5. DEPLOYMENT STRATEGIES:
+#    - Rolling Update: Gradual pod replacement (zero downtime)
+#    - Canary: Test with small user subset
+#    - Blue/Green: Switch between two identical environments
+#
+# 6. SAFETY MECHANISMS:
+#    - Database backups before production deploys
+#    - Health checks ensure deployment succeeded
+#    - Automatic rollback on failures
+#    - Manual approval gates for production
+#
+# 7. OBSERVABILITY:
+#    - Health endpoints verify service status
+#    - Metrics monitor performance
+#    - Logs capture detailed events
+#    - Alerts notify team of issues
+#
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# HOW TO USE THIS WORKFLOW:
+#
+# SETUP (ONE-TIME):
+#   1. Configure GitHub secrets:
+#      - GITHUB_TOKEN (auto-provided)
+#      - KUBE_CONFIG_STAGING (base64 encoded kubeconfig)
+#      - KUBE_CONFIG_PRODUCTION (base64 encoded kubeconfig)
+#      - SLACK_WEBHOOK (optional, for notifications)
+#
+#   2. Set up Kubernetes clusters:
+#      - Staging cluster with namespace "staging"
+#      - Production cluster with namespace "production"
+#      - Configure deployments, services, ingress
+#
+#   3. Configure GitHub environments:
+#      Settings → Environments → Create:
+#      - staging (auto-deploy)
+#      - production (require approvers)
+#      - canary (manual trigger)
+#
+# DAILY USAGE:
+#   - Merge PR to main → auto-deploys to staging
+#   - Tag version → deploys to production
+#   - Workflow dispatch → deploy to any environment
+#
+# MONITORING:
+#   - Check Actions tab for deployment status
+#   - View logs for each step
+#   - Monitor app health in Kubernetes
+#   - Set up alerts for failures
+#
+# TROUBLESHOOTING:
+#   - Deployment failed? Check logs in Actions tab
+#   - Pod not starting? Use: kubectl describe pod <pod-name>
+#   - Health check failed? Check app logs: kubectl logs <pod-name>
+#   - Need to rollback? kubectl rollout undo deployment/<name>
+#
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# LEARNING RESOURCES:
+#   - Kubernetes: https://kubernetes.io/docs/
+#   - Docker: https://docs.docker.com/
+#   - kubectl commands: https://kubernetes.io/docs/reference/kubectl/
+#   - GitHub Actions: https://docs.github.com/en/actions
+#   - Deployment strategies: https://martinfowler.com/bliki/CanaryRelease.html
+#
+# NEXT STEPS:
+#   - Add automated tests after deployment
+#   - Implement automated canary analysis
+#   - Set up monitoring dashboards
+#   - Configure alerts for deployment failures
+#   - Document rollback procedures
+#   - Practice disaster recovery
+#
+################################################################################

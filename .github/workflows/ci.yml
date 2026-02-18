@@ -1,79 +1,221 @@
+################################################################################
+# CONTINUOUS INTEGRATION (CI) PIPELINE
+################################################################################
+#
+# PURPOSE:
+#   This workflow runs automated checks on every code change to ensure quality,
+#   consistency, and correctness before code is merged or deployed.
+#
+# WHAT IS CI?
+#   Continuous Integration is the practice of automatically building and testing
+#   code every time a developer commits changes. This helps catch bugs early,
+#   ensures code quality, and makes collaboration easier.
+#
+# WHEN THIS RUNS:
+#   - On every push to 'main' or 'develop' branches
+#   - On every pull request targeting 'main' or 'develop' branches
+#
+# WORKFLOW STAGES:
+#   1. Backend Testing: Lint, type-check, and test Python code
+#   2. Frontend Testing: Lint, type-check, and build React/TypeScript code
+#   3. Docker Build: Verify both backend and frontend can be containerized
+#   4. Smoke Tests: Run quick end-to-end sanity checks
+#
+# LEARNING NOTES:
+#   - This file uses YAML syntax (indentation matters!)
+#   - Actions run in isolated environments (containers/VMs)
+#   - Jobs run in parallel unless dependencies are specified with 'needs'
+#   - Environment variables can be referenced with ${{ env.VARIABLE_NAME }}
+#
+################################################################################
+
 name: CI Pipeline
 
+# TRIGGER CONFIGURATION
+# Defines when this workflow should run
 on:
+  # Trigger on code pushes to specific branches
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop ]  # Only run on main and develop branches
+  
+  # Trigger on pull requests targeting specific branches
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, develop ]  # Check PRs before they merge
 
+# ENVIRONMENT VARIABLES
+# These variables are available to all jobs in this workflow
+# Using env variables makes it easy to update versions in one place
 env:
-  PYTHON_VERSION: '3.11'
-  NODE_VERSION: '18'
+  PYTHON_VERSION: '3.11'  # Python version for backend testing
+  NODE_VERSION: '18'      # Node.js version for frontend testing
+
+################################################################################
+# JOBS
+# Jobs are independent tasks that run in parallel unless dependencies are set
+################################################################################
 
 jobs:
-  # Backend Python CI
+  ############################################################################
+  # JOB 1: BACKEND LINT AND TEST
+  ############################################################################
+  #
+  # PURPOSE:
+  #   Validate Python backend code quality, style, and functionality
+  #
+  # WHAT IT DOES:
+  #   1. Checks code formatting with Black (Python formatter)
+  #   2. Lints code with Ruff (fast Python linter)
+  #   3. Type-checks code with MyPy (static type checker)
+  #   4. Runs unit tests (test individual functions/classes)
+  #   5. Runs integration tests (test how components work together)
+  #   6. Measures code coverage (how much code is tested)
+  #
+  # WHY IT MATTERS:
+  #   - Catches bugs before they reach production
+  #   - Ensures consistent code style across the team
+  #   - Prevents type errors that could cause runtime failures
+  #   - Maintains high code quality and reliability
+  #
+  ############################################################################
+  
   backend-lint-and-test:
     name: Backend - Lint & Test
+    
+    # RUNNER: The virtual machine this job runs on
+    # ubuntu-latest = Ubuntu VM provided by GitHub (free for public repos)
     runs-on: ubuntu-latest
     
+    # SERVICE CONTAINERS
+    # These are Docker containers that run alongside your tests
+    # They provide dependencies like databases and caches
+    # 
+    # WHY USE SERVICES?
+    # - Your tests need a real database and Redis to run
+    # - Services are isolated (don't affect your local machine)
+    # - They're automatically cleaned up after tests finish
+    # - They run in the same network as your test code
+    #
     services:
+      # POSTGRES DATABASE SERVICE
+      # Provides a PostgreSQL database for testing
       postgres:
+        # Docker image to use (PostgreSQL 15 on Alpine Linux - small & fast)
         image: postgres:15-alpine
+        
+        # Environment variables configure the database
         env:
-          POSTGRES_DB: marketing_agent_test
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: marketing_agent_test       # Database name
+          POSTGRES_USER: postgres                 # Username
+          POSTGRES_PASSWORD: postgres             # Password (OK for testing, NOT for production!)
+        
+        # Port mapping: host:container
+        # This exposes PostgreSQL on localhost:5432
         ports:
           - 5432:5432
+        
+        # HEALTH CHECK
+        # Ensures PostgreSQL is ready before tests start
+        # Without this, tests might fail if DB isn't ready yet
         options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          --health-cmd pg_isready                 # Command to check if DB is ready
+          --health-interval 10s                   # Check every 10 seconds
+          --health-timeout 5s                     # Each check times out after 5 seconds
+          --health-retries 5                      # Retry 5 times before giving up
       
+      # REDIS CACHE SERVICE
+      # Provides Redis in-memory cache for testing
+      # Used for session storage, caching, and real-time features
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine                     # Redis 7 on Alpine Linux
         ports:
-          - 6379:6379
+          - 6379:6379                             # Standard Redis port
+        
+        # Health check ensures Redis is ready
         options: >-
-          --health-cmd "redis-cli ping"
+          --health-cmd "redis-cli ping"           # Ping Redis to check if it responds
           --health-interval 10s
           --health-timeout 3s
           --health-retries 5
     
+    # STEPS
+    # Sequential actions that run in order within this job
+    # Each step runs in the same environment (can share files/state)
+    #
     steps:
+      # STEP 1: CHECKOUT CODE
+      # Downloads your repository code to the runner
+      # This is required for almost every workflow
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4              # @v4 = version 4 of this action
       
+      # STEP 2: SETUP PYTHON
+      # Installs Python and configures pip caching
+      # Caching speeds up subsequent runs by reusing downloaded packages
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
+          python-version: ${{ env.PYTHON_VERSION }}  # Use version from env variables
+          cache: 'pip'                               # Cache pip dependencies
       
+      # STEP 3: INSTALL DEPENDENCIES
+      # Installs Python packages needed for testing
+      # The ".[dev]" installs the project in editable mode with dev dependencies
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          python -m pip install --upgrade pip    # Upgrade pip to latest version
+          pip install -e ".[dev]"                # Install project with dev dependencies
       
+      # STEP 4: CODE FORMATTING CHECK
+      # Black is an opinionated Python formatter (ensures consistent style)
+      # --check = don't modify files, just verify they're formatted correctly
+      # If any file isn't formatted, this step fails
       - name: Run Black formatter check
         run: black --check src/ tests/
       
+      # STEP 5: CODE LINTING
+      # Ruff is a fast Python linter (finds potential bugs and style issues)
+      # It checks for: unused imports, undefined variables, style violations, etc.
       - name: Run Ruff linter
         run: ruff check src/ tests/
       
+      # STEP 6: TYPE CHECKING
+      # MyPy verifies Python type hints (catches type-related bugs)
+      # continue-on-error: true = don't fail the build if MyPy finds issues
+      # This is useful when gradually adding type hints to a project
       - name: Run MyPy type checker
         run: mypy src/
-        continue-on-error: true
+        continue-on-error: true                  # Don't block on type errors (yet)
       
+      # STEP 7: UNIT TESTS
+      # Unit tests verify individual functions/classes work correctly
+      # They run fast because they test small pieces in isolation
+      # 
+      # ENVIRONMENT VARIABLES:
+      # - DATABASE_URL: Connects to the Postgres service container
+      # - REDIS_URL: Connects to the Redis service container
+      # - OPENAI_API_KEY: Loaded from GitHub Secrets (secure storage)
+      # 
+      # PYTEST FLAGS:
+      # - -v = verbose output (show each test)
+      # - --cov=src = measure code coverage for the src/ directory
+      # - --cov-report=xml = generate XML coverage report (for Codecov)
+      # - --cov-report=term = show coverage in terminal
+      #
       - name: Run unit tests
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/marketing_agent_test
           REDIS_URL: redis://localhost:6379
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}  # Secure secrets from GitHub
         run: |
           pytest tests/unit/ -v --cov=src --cov-report=xml --cov-report=term
       
+      # STEP 8: INTEGRATION TESTS
+      # Integration tests verify that different components work together
+      # They test interactions between: API, database, cache, external services
+      # 
+      # --cov-append: Add to existing coverage instead of overwriting
+      # This combines unit and integration test coverage
+      #
       - name: Run integration tests
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/marketing_agent_test
@@ -82,97 +224,281 @@ jobs:
         run: |
           pytest tests/integration/ -v --cov=src --cov-append --cov-report=xml
       
+      # STEP 9: UPLOAD CODE COVERAGE
+      # Codecov is a service that tracks code coverage over time
+      # It shows which lines of code are tested and which aren't
+      # 
+      # WHY TRACK COVERAGE?
+      # - Ensures important code has tests
+      # - Prevents coverage from decreasing over time
+      # - Helps identify untested edge cases
+      # 
+      # flags: backend = tags this coverage as backend-specific
+      # fail_ci_if_error: false = don't fail build if upload fails (network issues, etc.)
+      #
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
-          file: ./coverage.xml
-          flags: backend
-          fail_ci_if_error: false
+          file: ./coverage.xml                  # Coverage report from pytest
+          flags: backend                        # Tag this as backend coverage
+          fail_ci_if_error: false               # Don't fail if upload fails
   
-  # Frontend CI
+  ############################################################################
+  # JOB 2: FRONTEND LINT AND TEST
+  ############################################################################
+  #
+  # PURPOSE:
+  #   Validate React/TypeScript frontend code quality and buildability
+  #
+  # WHAT IT DOES:
+  #   1. Runs ESLint (JavaScript/TypeScript linter)
+  #   2. Runs TypeScript compiler in check mode (no output, just type checking)
+  #   3. Builds the frontend with Vite (production build)
+  #   4. Uploads build artifacts for later use
+  #
+  # WHY SEPARATE FROM BACKEND?
+  #   - Different tech stack (TypeScript vs Python)
+  #   - Different tools and dependencies
+  #   - Can run in parallel with backend tests (faster CI)
+  #
+  ############################################################################
+  
   frontend-lint-and-test:
     name: Frontend - Lint & Build
     runs-on: ubuntu-latest
     
     steps:
+      # STEP 1: CHECKOUT CODE
       - name: Checkout code
         uses: actions/checkout@v4
       
+      # STEP 2: SETUP NODE.JS
+      # Installs Node.js and npm
+      # 
+      # cache: 'npm' = caches node_modules to speed up future runs
+      # cache-dependency-path = tells GitHub where package-lock.json is located
+      #   (important when package.json isn't in the root directory)
+      #
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
+          node-version: ${{ env.NODE_VERSION }}         # Node.js 18
+          cache: 'npm'                                   # Cache npm dependencies
+          cache-dependency-path: frontend/package-lock.json  # Location of lock file
       
+      # STEP 3: INSTALL DEPENDENCIES
+      # npm ci = "Clean Install" - installs exact versions from package-lock.json
+      # 
+      # WHY npm ci INSTEAD OF npm install?
+      # - Faster (optimized for CI)
+      # - More reliable (uses exact versions)
+      # - Fails if package.json and package-lock.json are out of sync
+      # - Always deletes node_modules first (clean state)
+      #
+      # working-directory = runs command in the frontend/ subdirectory
+      #
       - name: Install dependencies
         working-directory: frontend
         run: npm ci
       
+      # STEP 4: RUN ESLINT
+      # ESLint finds problems in JavaScript/TypeScript code
+      # Checks for: syntax errors, bad practices, style issues, potential bugs
+      # 
+      # continue-on-error: true = don't fail the build (just warn)
+      # Useful when gradually improving code quality
+      #
       - name: Run ESLint
         working-directory: frontend
         run: npm run lint
-        continue-on-error: true
+        continue-on-error: true                          # Don't block on lint warnings
       
+      # STEP 5: TYPESCRIPT TYPE CHECKING
+      # Runs TypeScript compiler without generating output files
+      # 
+      # npx tsc = run TypeScript compiler
+      # --noEmit = only check types, don't generate .js files
+      # 
+      # WHY TYPE CHECK?
+      # - Catches type errors before runtime
+      # - Ensures API contracts are correct
+      # - Prevents common JavaScript bugs
+      #
       - name: Run TypeScript check
         working-directory: frontend
         run: npx tsc --noEmit
       
+      # STEP 6: BUILD FRONTEND
+      # Creates optimized production build
+      # 
+      # npm run build = runs Vite build process
+      # - Bundles all JavaScript/TypeScript/CSS
+      # - Minifies and optimizes code
+      # - Generates static files in dist/ folder
+      # 
+      # If this succeeds, we know the app can be deployed
+      #
       - name: Build frontend
         working-directory: frontend
         run: npm run build
       
+      # STEP 7: UPLOAD BUILD ARTIFACTS
+      # Saves the build output so other jobs can use it
+      # 
+      # WHY UPLOAD ARTIFACTS?
+      # - Can download and inspect the build
+      # - Can reuse in deployment jobs (no need to rebuild)
+      # - Provides audit trail of what was built
+      # 
+      # retention-days: 7 = keep artifacts for 7 days then auto-delete
+      #
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: frontend-build
-          path: frontend/dist
-          retention-days: 7
+          name: frontend-build                          # Artifact name
+          path: frontend/dist                           # Directory to upload
+          retention-days: 7                             # Keep for 7 days
   
-  # Docker build test
+  ############################################################################
+  # JOB 3: DOCKER BUILD TEST
+  ############################################################################
+  #
+  # PURPOSE:
+  #   Verify that the application can be containerized (built into Docker images)
+  #
+  # WHAT IT DOES:
+  #   1. Builds Docker images for backend and frontend
+  #   2. Doesn't push images (just validates they build successfully)
+  #   3. Uses layer caching to speed up builds
+  #
+  # WHY BUILD DOCKER IMAGES IN CI?
+  #   - Catches Dockerfile errors early
+  #   - Ensures the app can be deployed via containers
+  #   - Tests that all dependencies are properly containerized
+  #   - Validates multi-stage builds work correctly
+  #
+  # WHEN THIS RUNS:
+  #   After both backend and frontend tests pass (needs: [...])
+  #   This ensures we only build images if tests are successful
+  #
+  ############################################################################
+  
   docker-build-test:
     name: Docker - Build Test
     runs-on: ubuntu-latest
+    
+    # DEPENDENCIES
+    # Wait for these jobs to complete before starting
+    # Only runs if BOTH jobs succeed
     needs: [backend-lint-and-test, frontend-lint-and-test]
     
     steps:
+      # STEP 1: CHECKOUT CODE
       - name: Checkout code
         uses: actions/checkout@v4
       
+      # STEP 2: SETUP DOCKER BUILDX
+      # Buildx is Docker's advanced build system
+      # 
+      # FEATURES:
+      # - Multi-platform builds (Linux, ARM, etc.)
+      # - Build caching for faster builds
+      # - Advanced Dockerfile features
+      # - Parallel build stages
+      #
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       
+      # STEP 3: BUILD BACKEND DOCKER IMAGE
+      # Creates a Docker image for the Python backend
+      # 
+      # PARAMETERS EXPLAINED:
+      # - context: . = use current directory as build context
+      # - file: path to Dockerfile
+      # - push: false = don't push to registry (just test the build)
+      # - tags: name and version for the image
+      # - cache-from: reuse layers from previous builds
+      # - cache-to: save layers for future builds
+      # 
+      # CACHING (type=gha):
+      # - gha = GitHub Actions cache
+      # - Saves Docker layers between workflow runs
+      # - Can reduce build time from 10 minutes to 2 minutes
+      # - mode=max = cache all layers (more storage, faster builds)
+      #
       - name: Build backend Docker image (test)
         uses: docker/build-push-action@v5
         with:
-          context: .
-          file: ./infrastructure/docker/Dockerfile.backend
-          push: false
-          tags: marketing-agent-backend:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          context: .                                    # Build context (root directory)
+          file: ./infrastructure/docker/Dockerfile.backend  # Path to Dockerfile
+          push: false                                   # Don't push to registry
+          tags: marketing-agent-backend:test            # Image name and tag
+          cache-from: type=gha                          # Load cache from GitHub Actions
+          cache-to: type=gha,mode=max                   # Save cache to GitHub Actions
       
+      # STEP 4: BUILD FRONTEND DOCKER IMAGE
+      # Creates a Docker image for the React frontend
+      # 
+      # Same caching strategy as backend
+      # Context is ./frontend because that's where package.json lives
+      #
       - name: Build frontend Docker image (test)
         uses: docker/build-push-action@v5
         with:
-          context: ./frontend
+          context: ./frontend                           # Frontend directory context
           file: ./infrastructure/docker/Dockerfile.frontend
           push: false
           tags: marketing-agent-frontend:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
   
-  # Smoke tests
+  ############################################################################
+  # JOB 4: SMOKE TESTS
+  ############################################################################
+  #
+  # PURPOSE:
+  #   Run quick end-to-end tests to verify critical functionality works
+  #
+  # WHAT ARE SMOKE TESTS?
+  #   "Smoke testing" is a term from hardware testing (if it doesn't catch
+  #   fire, it passes the smoke test). In software, smoke tests are quick
+  #   checks that verify the most critical features work.
+  #
+  # EXAMPLES OF SMOKE TESTS:
+  #   - Can the API server start?
+  #   - Can we connect to the database?
+  #   - Do the main endpoints respond?
+  #   - Can we create and retrieve basic data?
+  #
+  # SMOKE vs UNIT vs INTEGRATION TESTS:
+  #   - Unit tests: Test individual functions (fast, many tests)
+  #   - Integration tests: Test components together (medium speed)
+  #   - Smoke tests: Test critical paths end-to-end (slow, few tests)
+  #
+  # WHY RUN SMOKE TESTS?
+  #   - Final sanity check before deployment
+  #   - Catches issues that only appear in full system
+  #   - Verifies all services can communicate
+  #   - Tests real-world scenarios
+  #
+  ############################################################################
+  
   smoke-tests:
     name: Smoke Tests
     runs-on: ubuntu-latest
+    
+    # DEPENDENCY
+    # Only run after backend tests pass
+    # Frontend tests aren't required because smoke tests are backend-focused
     needs: [backend-lint-and-test]
     
+    # SERVICE CONTAINERS
+    # Same PostgreSQL and Redis setup as backend tests
     services:
       postgres:
         image: postgres:15-alpine
         env:
-          POSTGRES_DB: marketing_agent
+          POSTGRES_DB: marketing_agent             # Different DB name (not for testing)
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
         ports:
@@ -189,19 +515,33 @@ jobs:
           - 6379:6379
     
     steps:
+      # STEP 1: CHECKOUT CODE
       - name: Checkout code
         uses: actions/checkout@v4
       
+      # STEP 2: SETUP PYTHON
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       
+      # STEP 3: INSTALL DEPENDENCIES
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
       
+      # STEP 4: RUN SMOKE TESTS
+      # Executes tests in tests/smoke/ directory
+      # These should be quick tests of critical functionality
+      # 
+      # TYPICAL SMOKE TESTS:
+      # - test_api_health_check()
+      # - test_database_connection()
+      # - test_redis_connection()
+      # - test_create_campaign()
+      # - test_user_authentication()
+      #
       - name: Run smoke tests
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/marketing_agent
@@ -209,3 +549,35 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           pytest tests/smoke/ -v
+
+################################################################################
+# END OF CI PIPELINE
+################################################################################
+#
+# WHAT HAPPENS AFTER CI?
+#   If all jobs pass:
+#   - ✅ Code is safe to merge
+#   - ✅ Can trigger CD (Continuous Deployment) pipeline
+#   - ✅ Can create a release
+#
+#   If any job fails:
+#   - ❌ PR cannot be merged
+#   - ❌ Developers must fix issues
+#   - ❌ CI runs again after fixes are pushed
+#
+# CI/CD PIPELINE FLOW:
+#   Developer Push → CI Pipeline (this file) → CD Pipeline (cd.yml)
+#   ────────────────────────────────────────────────────────────────────
+#   1. Code pushed to branch
+#   2. CI runs tests and checks
+#   3. If tests pass, code can be merged
+#   4. When merged to main, CD deploys to staging
+#   5. If staging is stable, CD deploys to production
+#
+# LEARNING RESOURCES:
+#   - GitHub Actions Docs: https://docs.github.com/en/actions
+#   - YAML Syntax: https://yaml.org/
+#   - Docker Best Practices: https://docs.docker.com/develop/dev-best-practices/
+#   - Testing Strategies: https://martinfowler.com/articles/practical-test-pyramid.html
+#
+################################################################################

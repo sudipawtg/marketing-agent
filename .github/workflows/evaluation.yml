@@ -1,26 +1,67 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# AI EVALUATION WORKFLOW
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# PURPOSE:
+# This workflow tests the quality of AI agent outputs using automated evaluation.
+# It runs test datasets through the AI agent and measures performance metrics.
+#
+# WHY THIS MATTERS FOR AI SYSTEMS:
+# Unlike traditional software (where tests either pass/fail), AI outputs are
+# probabilistic and vary each run. We need continuous evaluation to:
+# - Detect regressions (did prompt changes make outputs worse?)
+# - Measure quality metrics (relevance, accuracy, coherence)
+# - Ensure safety (prevent harmful/biased outputs)
+# - Track performance over time
+#
+# WHAT IT EVALUATES:
+# - Campaign optimization agent decisions
+# - Creative performance analysis quality
+# - Response relevance, accuracy, completeness
+# - Safety guardrails (no inappropriate content)
+#
+# WHEN IT RUNS:
+# - On pull requests (before merging changes to prompts/agent code)
+# - On push to main (after merging, validate production readiness)
+# - Daily at 2 AM UTC (catch model drift or external API changes)
+# - Manually (for ad-hoc testing with specific datasets)
+#
+# LEARNING - AI EVALUATION CONCEPTS:
+# - Golden Dataset: Curated test cases with known-good outputs
+# - Pass Rate: % of test cases that meet quality thresholds
+# - LangSmith: Observability platform for tracing LLM calls
+# - Regression: When AI performs worse than baseline (previous version)
+#
+# ═══════════════════════════════════════════════════════════════════════════
+
 name: AI Evaluation
 
+# ───────────────────────────────────────────────────────────────────────────
+# WORKFLOW TRIGGERS
+# ───────────────────────────────────────────────────────────────────────────
 on:
-  # Run on pull requests
+  # Trigger on PRs that change agent code, prompts, or evaluation datasets
+  # Path filters save compute - only run when relevant files change
   pull_request:
     branches: [main, develop]
     paths:
-      - 'src/**'
-      - 'prompts/**'
-      - 'evaluation/datasets/**'
+      - 'src/**'                    # Backend Python code (agent logic)
+      - 'prompts/**'                # LLM prompt templates
+      - 'evaluation/datasets/**'    # Test datasets
   
-  # Run on main branch pushes
+  # Run on main branch pushes (validate production code)
   push:
     branches: [main]
     paths:
       - 'src/**'
       - 'prompts/**'
   
-  # Run on schedule (daily at 2 AM UTC)
+  # Daily scheduled run - detect model drift or API changes
+  # Model providers (OpenAI, Anthropic) update models frequently
   schedule:
-    - cron: '0 2 * * *'
+    - cron: '0 2 * * *'   # 2 AM UTC daily
   
-  # Allow manual trigger
+  # Manual trigger with options
   workflow_dispatch:
     inputs:
       dataset:
@@ -28,19 +69,32 @@ on:
         required: false
         default: 'all'
       enable_tracing:
-        description: 'Enable LangSmith tracing'
+        description: 'Enable LangSmith tracing'  # Tracing helps debug failures
         required: false
         default: 'true'
 
+# Global environment variables for all jobs
 env:
-  PYTHON_VERSION: '3.11'
+  PYTHON_VERSION: '3.11'    # Consistent Python version
+
+# ═══════════════════════════════════════════════════════════════════════════
+# JOBS: AI EVALUATION PIPELINE
+# ═══════════════════════════════════════════════════════════════════════════
 
 jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 1: RUN AI EVALUATION
+  # ─────────────────────────────────────────────────────────────────────────
+  # WHAT: Runs golden datasets through the AI agent and evaluates outputs
+  # HOW: Uses evaluation scripts with predefined test cases and scoring criteria
+  # OUTPUT: Pass rates, quality scores, detailed reports
+  # ─────────────────────────────────────────────────────────────────────────
   evaluate:
     name: Run AI Evaluation
     runs-on: ubuntu-latest
     
     steps:
+      # Step 1: Get code
       - name: Checkout code
         uses: actions/checkout@v4
       
@@ -55,18 +109,37 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,evaluation]"
       
+      # Step 4: Create directory for evaluation results
       - name: Create results directory
         run: mkdir -p evaluation/results
       
+      # ───────────────────────────────────────────────────────────────
+      # EVALUATION DATASET 1: CAMPAIGN OPTIMIZATION
+      # ───────────────────────────────────────────────────────────────
+      # Tests: AI agent's ability to optimize marketing campaigns
+      # Dataset: Scenario: Low CTR campaign, need optimization suggestions
+      # Expected: Actionable recommendations (improve headlines, A/B test, etc.)
+      # Metrics: Relevance, accuracy, actionability
+      # ───────────────────────────────────────────────────────────────
       - name: Run evaluation on campaign optimization dataset
         env:
+          # LangSmith: Tracing/logging platform for LLM applications
+          # Traces every LLM call with inputs, outputs, latency, cost
           LANGCHAIN_API_KEY: ${{ secrets.LANGCHAIN_API_KEY }}
           LANGCHAIN_TRACING_V2: ${{ github.event.inputs.enable_tracing || 'true' }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}  # For GPT-4 calls
         run: |
           python scripts/run_evaluation.py campaign_optimization \
             --output-dir evaluation/results
       
+      # ───────────────────────────────────────────────────────────────
+      # EVALUATION DATASET 2: CREATIVE PERFORMANCE
+      # ───────────────────────────────────────────────────────────────
+      # Tests: AI agent's ability to analyze ad creative performance
+      # Dataset: Ad metrics (impressions, clicks, conversions)
+      # Expected: Insights on what's working/not working
+      # Metrics: Insight quality, data interpretation accuracy
+      # ───────────────────────────────────────────────────────────────
       - name: Run evaluation on creative performance dataset
         env:
           LANGCHAIN_API_KEY: ${{ secrets.LANGCHAIN_API_KEY }}
@@ -76,19 +149,26 @@ jobs:
           python scripts/run_evaluation.py creative_performance \
             --output-dir evaluation/results
       
+      # Step 5: Generate human-readable evaluation report
+      # Aggregates results from all datasets into summary report
+      # Output: Markdown report with pass/fail, scores, examples
       - name: Generate evaluation report
         run: |
           python scripts/generate_evaluation_report.py \
             --results-dir evaluation/results \
             --output-dir evaluation/reports
       
+      # Step 6: Save detailed results (JSON with all test cases)
+      # retention-days: How long GitHub keeps the artifact
+      # (30 days balances storage costs with debuggability)
       - name: Upload evaluation results
         uses: actions/upload-artifact@v4
         with:
-          name: evaluation-results-${{ github.sha }}
+          name: evaluation-results-${{ github.sha }}  # Unique name per commit
           path: evaluation/results/
           retention-days: 30
       
+      # Step 7: Save human-readable reports
       - name: Upload evaluation reports
         uses: actions/upload-artifact@v4
         with:
@@ -96,6 +176,16 @@ jobs:
           path: evaluation/reports/
           retention-days: 30
       
+      # Step 8: Check if results meet minimum quality thresholds
+      # QUALITY GATES: Fail workflow if scores drop below thresholds
+      # - Pass rate: 85%+ (at least 85% of test cases must pass)
+      # - Relevance: 0.70+ (responses must be on-topic)
+      # - Accuracy: 0.70+ (factual correctness in responses)
+      # - Completeness: 0.80+ (all required info provided)
+      # - Coherence: 0.70+ (well-structured, clear responses)
+      # - Safety: 1.00 (ZERO tolerance for unsafe content)
+      #
+      # If thresholds are not met, workflow fails and PR is blocked
       - name: Check evaluation thresholds
         run: |
           python scripts/check_evaluation_thresholds.py \
@@ -107,8 +197,11 @@ jobs:
             --min-coherence 0.70 \
             --min-safety 1.00
       
+      # Step 9: Post results as PR comment (only on pull requests)
+      # Uses GitHub API to comment evaluation summary directly on PR
+      # Makes results visible without needing to download artifacts
       - name: Comment PR with evaluation results
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request'  # Only run on PRs
         uses: actions/github-script@v7
         with:
           script: |
@@ -119,17 +212,24 @@ jobs:
               const report = fs.readFileSync(reportPath, 'utf8');
               
               github.rest.issues.createComment({
-                issue_number: context.issue.number,
+                issue_number: context.issue.number,  # PR number
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 body: `## 🤖 AI Evaluation Results\n\n${report}`
               });
             }
   
+  # ─────────────────────────────────────────────────────────────────────────
+  # JOB 2: PERFORMANCE BENCHMARKING
+  # ─────────────────────────────────────────────────────────────────────────
+  # WHAT: Measures AI agent performance (latency, token usage, cost)
+  # WHY: Track performance regressions and optimize for production
+  # METRICS: Response time, tokens per request, cost per 1000 queries
+  # ─────────────────────────────────────────────────────────────────────────
   benchmark:
     name: Run Performance Benchmarks
     runs-on: ubuntu-latest
-    needs: evaluate
+    needs: evaluate  # Run only after evaluation (⇨ wait for quality check first)
     
     steps:
       - name: Checkout code
@@ -228,3 +328,49 @@ jobs:
                 body: `## 📊 Regression Analysis\n\n${report}`
               });
             }
+
+# ═══════════════════════════════════════════════════════════════════════════
+# END OF AI EVALUATION WORKFLOW
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# SUMMARY - THE AI EVALUATION PIPELINE:
+# ────────────────────────────────────────
+# 1. EVALUATE Job → Runs golden datasets, measures quality scores
+# 2. BENCHMARK Job → Measures performance (latency, tokens, cost)
+# 3. REGRESSION CHECK Job → Compares PR vs main branch (detect degradation)
+#
+# KEY CONCEPTS:
+# ─────────────
+# • Golden Dataset: Curated test cases representing real-world scenarios
+# • Quality Metrics: Relevance, accuracy, completeness, coherence, safety
+# • LangSmith Tracing: Records every LLM call for debugging
+# • Threshold Gates: Workflow fails if quality/performance drops
+# • Regression Analysis: Prevents bad changes from reaching production
+#
+# HOW TO USE:
+# ───────────
+# 1. Make changes to agent code or prompts
+# 2. Create pull request
+# 3. Evaluation runs automatically
+# 4. Review results in PR comment
+# 5. If failed, improve code and push again
+# 6. Once passing, safe to merge!
+#
+# TROUBLESHOOTING:
+# ────────────────
+# • Evaluation failed? Check LangSmith traces in logs
+# • Quality scores dropped? Review prompt changes, test edge cases
+# • Performance regressed? Profile code, optimize prompt length
+# • Safety violations? Review content filters, add guardrails
+#
+# BEST PRACTICES:
+# ───────────────
+# ✓ Keep golden datasets up-to-date with real user queries
+# ✓ Set reasonable thresholds (too strict → blocks valid changes)
+# ✓ Monitor pass rates over time (trending down = systemic issues)
+# ✓ Use LangSmith tracing to debug individual failures
+# ✓ Test edge cases (empty inputs, very long inputs, non-English)
+# ✓ Include adversarial examples (prompt injection attempts)
+# ✓ Document why specific thresholds were chosen
+#
+# ═══════════════════════════════════════════════════════════════════════════
