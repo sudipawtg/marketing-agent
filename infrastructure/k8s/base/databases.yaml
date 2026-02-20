@@ -1,111 +1,731 @@
+################################################################################
+# DATABASES
+################################################################################
+#
+# PURPOSE:
+#   Run PostgreSQL and Redis databases within Kubernetes cluster
+#
+# ⚠️ PRODUCTION WARNING:
+#   Running databases in Kubernetes is COMPLEX and RISKY
+#   Consider managed services instead:
+#   - AWS RDS (PostgreSQL), ElastiCache (Redis)
+#   - GCP Cloud SQL (PostgreSQL), Memorystore (Redis)
+#   - Azure Database for PostgreSQL, Azure Cache for Redis
+#
+# WHY USE MANAGED SERVICES?
+#   ✅ Automatic backups and point-in-time recovery
+#   ✅ Automatic minor version updates and patching
+#   ✅ Multi-AZ replication for high availability
+#   ✅ Performance insights and monitoring
+#   ✅ Automated failover
+#   ✅ Managed read replicas
+#   ❌ Running in K8s: You handle all of the above
+#
+# WHEN TO RUN DATABASES IN KUBERNETES?
+#   - Development/staging environments (easier setup)
+#   - Small-scale applications (< 1000 users)
+#   - When you have dedicated database team
+#   - When vendor lock-in is a major concern
+#
+################################################################################
+
+################################################################################
+# POSTGRESQL STATEFULSET
+################################################################################
+#
+# WHAT IS STATEFULSET?
+#   Like Deployment, but for stateful applications (databases, message queues)
+#
+# STATEFULSET vs DEPLOYMENT:
+#
+#   DEPLOYMENT (Stateless):
+#   - Pods are interchangeable (any pod can handle any request)
+#   - No stable identity (pod names change: backend-abc123, backend-xyz789)
+#   - No guaranteed ordering (pods start/stop in any order)
+#   - Share storage or no storage
+#   - Use cases: Web servers, API servers, frontend
+#
+#   STATEFULSET (Stateful):
+#   - Pods have unique identity (postgres-0, postgres-1, postgres-2)
+#   - Stable network identity (postgres-0.postgres.namespace.svc.cluster.local)
+#   - Ordered deployment (postgres-0 starts before postgres-1)
+#   - Each pod gets own PersistentVolume (isolated storage)
+#   - Use cases: Databases, message queues, caches with persistence
+#
+# WHY STATEFULSET FOR POSTGRESQL?
+#   - Database needs persistent storage (data survives pod restart)
+#   - Each replica needs own storage (master writes, replicas read)
+#   - Stable hostname for replication configuration
+#
 apiVersion: apps/v1
 kind: StatefulSet
+
 metadata:
   name: postgres
   namespace: marketing-agent
+
 spec:
+  ########################################################################
+  # SERVICE NAME
+  ########################################################################
+  #
+  # serviceName: postgres
+  # - Name of headless service (defined below)
+  # - Used for DNS resolution of individual pods
+  #
+  # DNS NAMES:
+  # - Service: postgres.marketing-agent.svc.cluster.local
+  # - Pod 0: postgres-0.postgres.marketing-agent.svc.cluster.local
+  # - Pod 1: postgres-1.postgres.marketing-agent.svc.cluster.local
+  #
   serviceName: postgres
+  
+  ########################################################################
+  # REPLICAS
+  ########################################################################
+  #
+  # replicas: 1
+  # - Single PostgreSQL instance (no replication)
+  #
+  # ⚠️ LIMITATION:
+  # - Single point of failure (if pod dies, database is down)
+  # - No high availability
+  # - No read scaling
+  #
+  # FOR HIGH AVAILABILITY:
+  # - Use replicas: 3 with streaming replication
+  # - Requires: PostgreSQL replication configuration
+  # - Master pod: postgres-0 (read-write)
+  # - Replica pods: postgres-1, postgres-2 (read-only)
+  #
+  # OR BETTER:
+  # - Use managed service (AWS RDS Multi-AZ, GCP Cloud SQL HA)
+  #
   replicas: 1
+  
+  ########################################################################
+  # SELECTOR
+  ########################################################################
+  
   selector:
     matchLabels:
       app: postgres
+  
+  ########################################################################
+  # POD TEMPLATE
+  ########################################################################
+  
   template:
     metadata:
       labels:
         app: postgres
+    
     spec:
       containers:
         - name: postgres
+          
+          # IMAGE: postgres:15-alpine
+          # - PostgreSQL version 15 (latest stable)
+          # - Alpine Linux (smaller image: ~100 MB vs ~300 MB Debian)
+          #
+          # VERSION CONSIDERATIONS:
+          # - PostgreSQL 15: Latest (better performance, new features)
+          # - PostgreSQL 14: Stable (good for production)
+          # - DO NOT use 'latest' tag (unpredictable updates)
+          #
           image: postgres:15-alpine
+          
+          # PORTS:
           ports:
-            - containerPort: 5432
+            - containerPort: 5432    # PostgreSQL default port
               name: postgres
+          
+          ############################################################
+          # ENVIRONMENT VARIABLES
+          ############################################################
+          #
+          # PostgreSQL Docker image reads these at startup
+          # Only used during initial database creation
+          #
           env:
+            # POSTGRES_DB: Default database name
+            # - Created during first startup
+            # - Application connects to this database
+            #
             - name: POSTGRES_DB
               value: marketing_agent
+            
+            # POSTGRES_USER: Superuser username
+            # - Default: postgres
+            # - Has full database privileges
+            #
             - name: POSTGRES_USER
               value: postgres
+            
+            # POSTGRES_PASSWORD: Superuser password
+            # - From Secret (not hardcoded)
+            # - Required for database access
+            #
+            # SECURITY:
+            # - Change default password immediately
+            # - Use strong password (20+ characters)
+            # - Never log this value
+            #
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: marketing-agent-secrets
                   key: DATABASE_PASSWORD
+          
+          ############################################################
+          # VOLUME MOUNTS
+          ############################################################
+          #
+          # PERSISTENT STORAGE:
+          # - PostgreSQL data directory
+          # - Contains all databases, tables, indexes
+          # - Must survive pod restarts
+          #
           volumeMounts:
+            # MOUNT PATH: /var/lib/postgresql/data
+            # - PostgreSQL stores data here by default
+            # - PersistentVolume mounted here
+            #
+            # DATA PERSISTENCE:
+            # - Pod deleted: Data remains (on PersistentVolume)
+            # - Pod recreated: Mounts same PersistentVolume
+            # - Node fails: PersistentVolume moves to new node
+            #
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
+          
+          ############################################################
+          # RESOURCES
+          ############################################################
+          #
+          # DATABASE RESOURCE SIZING:
+          # - More critical than application pods
+          # - Databases are resource-intensive (CPU for queries, memory for cache)
+          #
           resources:
             requests:
+              # MEMORY: 256Mi
+              # - PostgreSQL shared_buffers: ~25% of memory = 64 MB
+              # - Connection pool: ~10 MB per connection
+              # - Working memory: ~150 MB
+              #
+              # SIZING:
+              # - Small DB (<1 GB data): 256 MB
+              # - Medium DB (1-10 GB data): 1-2 GB
+              # - Large DB (10-100 GB data): 4-8 GB
+              #
               memory: "256Mi"
+              
+              # CPU: 100m = 0.1 cores
+              # - Idle: ~10-20m
+              # - Light queries: 50-100m
+              # - Heavy queries: 500-1000m
+              #
               cpu: "100m"
+            
             limits:
+              # MEMORY LIMIT: 1Gi
+              # - 4x the request (burst capacity)
+              # - PostgreSQL can use more memory for caching
+              # - OOMKilled if exceeded
+              #
               memory: "1Gi"
+              
+              # CPU LIMIT: 500m = 0.5 cores
+              # - 5x the request
+              # - Allows burst for complex queries
+              #
               cpu: "500m"
+  
+  ############################################################################
+  # VOLUME CLAIM TEMPLATES
+  ############################################################################
+  #
+  # WHAT IS volumeClaimTemplates?
+  #   Automatically creates PersistentVolumeClaim for each pod
+  #   Each pod gets its own dedicated storage
+  #
+  # HOW IT WORKS:
+  # 1. StatefulSet created with 3 replicas
+  # 2. Kubernetes creates 3 PersistentVolumeClaims:
+  #    - postgres-data-postgres-0 (10 GB)
+  #    - postgres-data-postgres-1 (10 GB)
+  #    - postgres-data-postgres-2 (10 GB)
+  # 3. Each pod mounts its own PVC
+  # 4. If pod restarts, it remounts the same PVC (data persists)
+  #
+  # COMPARISON WITH DEPLOYMENT:
+  #   Deployment: All pods share one PersistentVolume (if any)
+  #   StatefulSet: Each pod gets own PersistentVolume
+  #
+  ############################################################################
+  
   volumeClaimTemplates:
     - metadata:
         name: postgres-data
+      
       spec:
+        # ACCESS MODES:
+        #
+        # ReadWriteOnce (RWO):
+        # - One pod can read/write
+        # - Most common for databases
+        # - Can only be mounted by single node
+        #
+        # ReadWriteMany (RWX):
+        # - Multiple pods can read/write
+        # - Requires special storage (NFS, GlusterFS, not EBS)
+        # - Not supported by default in most cloud providers
+        #
         accessModes: ["ReadWriteOnce"]
+        
+        # STORAGE SIZE:
         resources:
           requests:
+            # STORAGE: 10Gi = 10 Gibibytes
+            # - Enough for small database
+            # - Plan for growth (data + indexes + backups)
+            #
+            # SIZING GUIDELINES:
+            # - Application data: Estimate table sizes
+            # - Indexes: ~20-30% of data size
+            # - WAL logs: ~1-2 GB
+            # - Overhead: 20% buffer
+            #
+            # EXAMPLE:
+            # - 5 GB application data
+            # - 1.5 GB indexes (30%)
+            # - 1 GB WAL logs
+            # - 1.5 GB overhead (20%)
+            # Total: 9 GB → Request 10-15 GB
+            #
+            # COST:
+            # - AWS gp3 SSD: $0.08/GB/month (10 GB = $0.80/month)
+            # - GCP pd-ssd: $0.17/GB/month (10 GB = $1.70/month)
+            #
             storage: 10Gi
 ---
+################################################################################
+# POSTGRESQL HEADLESS SERVICE
+################################################################################
+#
+# WHAT IS A HEADLESS SERVICE?
+#   Service without a ClusterIP (clusterIP: None)
+#   Does not load balance traffic
+#   Returns pod IPs directly when queried via DNS
+#
+# WHY HEADLESS FOR STATEFULSET?
+#   - StatefulSet pods need individual DNS names
+#   - Applications can connect to specific pod (master or replica)
+#   - Replication requires stable network identity
+#
+# DNS RESOLUTION:
+#
+#   Service query:
+#   nslookup postgres.marketing-agent.svc.cluster.local
+#   → Returns all pod IPs (10.1.2.3, 10.1.2.4, 10.1.2.5)
+#
+#   Individual pod query:
+#   nslookup postgres-0.postgres.marketing-agent.svc.cluster.local
+#   → Returns single pod IP (10.1.2.3)
+#
+# COMPARISON:
+#
+#   Normal Service (ClusterIP):
+#   - Has virtual IP (e.g., 10.96.0.1)
+#   - Load balances traffic round-robin
+#   - Use for: Stateless apps (backend, frontend)
+#
+#   Headless Service (clusterIP: None):
+#   - No virtual IP
+#   - Returns pod IPs directly
+#   - Use for: StatefulSets (databases, message queues)
+#
 apiVersion: v1
 kind: Service
+
 metadata:
   name: postgres
   namespace: marketing-agent
+
 spec:
+  # CLUSTER IP: None (headless service)
+  # - No load balancing
+  # - DNS returns pod IPs directly
+  #
   clusterIP: None
+  
+  # SELECTOR: Route to pods with matching labels
   selector:
     app: postgres
+  
+  # PORTS:
   ports:
+    # PORT: 5432 (PostgreSQL default)
+    # - Service port and container port are same
+    #
     - port: 5432
       targetPort: 5432
 ---
+################################################################################
+# REDIS DEPLOYMENT
+################################################################################
+#
+# WHAT IS REDIS?
+#   In-memory data store (cache, session storage, message broker)
+#   Extremely fast (microsecond latency)
+#
+# WHY DEPLOYMENT (NOT STATEFULSET)?
+#   - No persistent storage needed (cache is ephemeral)
+#   - Data loss is acceptable (rebuilds from database)
+#   - Simpler than StatefulSet
+#
+# REDIS USE CASES:
+#   - Session storage (user login sessions)
+#   - Cache (frequently accessed data)
+#   - Rate limiting (track API calls per user)
+#   - Real-time analytics (view counts, click tracking)
+#   - Message queue (background jobs with Celery, Bull)
+#
+# ⚠️ EPHEMERAL STORAGE:
+#   - Data stored in EmptyDir (deleted when pod restarts)
+#   - For persistent Redis, use StatefulSet with PersistentVolume
+#   - OR use managed service (AWS ElastiCache, GCP Memorystore)
+#
 apiVersion: apps/v1
 kind: Deployment
+
 metadata:
   name: redis
   namespace: marketing-agent
+
 spec:
+  ########################################################################
+  # REPLICAS
+  ########################################################################
+  #
+  # replicas: 1
+  # - Single Redis instance (no clustering)
+  #
+  # ⚠️ LIMITATION:
+  # - Single point of failure (if pod dies, cache is lost)
+  # - No high availability
+  # - No read scaling
+  #
+  # FOR HIGH AVAILABILITY:
+  # - Redis Sentinel (automatic failover)
+  # - Redis Cluster (sharding and replication)
+  # - Managed service (AWS ElastiCache with Multi-AZ)
+  #
   replicas: 1
+  
+  ########################################################################
+  # SELECTOR
+  ########################################################################
+  
   selector:
     matchLabels:
       app: redis
+  
+  ########################################################################
+  # POD TEMPLATE
+  ########################################################################
+  
   template:
     metadata:
       labels:
         app: redis
+    
     spec:
       containers:
         - name: redis
+          
+          # IMAGE: redis:7-alpine
+          # - Redis version 7 (latest stable)
+          # - Alpine Linux (smaller image: ~30 MB vs ~100 MB Debian)
+          #
+          # REDIS 7 FEATURES:
+          # - Redis Functions (alternative to Lua scripts)
+          # - ACLs v2 (better security)
+          # - Sharded Pub/Sub
+          # - Performance improvements
+          #
           image: redis:7-alpine
+          
+          # PORTS:
           ports:
-            - containerPort: 6379
+            - containerPort: 6379    # Redis default port
               name: redis
+          
+          ############################################################
+          # RESOURCES
+          ############################################################
+          #
+          # REDIS RESOURCE SIZING:
+          # - Memory-intensive (stores all data in RAM)
+          # - Low CPU usage (simple operations)
+          #
           resources:
             requests:
+              # MEMORY: 128Mi
+              # - Small cache for session storage
+              # - Can store thousands of sessions
+              #
+              # SIZING:
+              # - Formula: (number of keys) * (average key size) * 1.2
+              # - Example: 10,000 sessions * 5 KB * 1.2 = 60 MB
+              # - Overhead: Redis metadata (~30%)
+              # - Total: ~128 MB for 10K sessions
+              #
+              # REDIS EVICTION:
+              # - When memory full, evicts least recently used keys (LRU)
+              # - Configure with: maxmemory-policy allkeys-lru
+              #
               memory: "128Mi"
+              
+              # CPU: 50m = 0.05 cores
+              # - Redis is single-threaded for commands
+              # - Background tasks use additional threads (persistence, replication)
+              # - Low CPU usage (mostly I/O bound)
+              #
               cpu: "50m"
+            
             limits:
+              # MEMORY LIMIT: 512Mi
+              # - 4x the request (burst capacity)
+              # - Allows cache to grow during traffic spikes
+              #
+              # WHAT HAPPENS IF EXCEEDED?
+              # - OOMKilled if maxmemory not configured
+              # - OR Redis evicts keys if maxmemory set
+              #
               memory: "512Mi"
+              
+              # CPU LIMIT: 200m = 0.2 cores
+              # - 4x the request
+              # - Redis rarely needs more (single-threaded)
+              #
               cpu: "200m"
+          
+          ############################################################
+          # VOLUME MOUNTS
+          ############################################################
+          #
+          # REDIS PERSISTENCE OPTIONS:
+          #
+          # 1. RDB (Redis Database Backup):
+          #    - Periodic snapshots (every N minutes)
+          #    - Smaller files, faster restarts
+          #    - Can lose data between snapshots
+          #
+          # 2. AOF (Append-Only File):
+          #    - Log every write operation
+          #    - Better durability (less data loss)
+          #    - Larger files, slower restarts
+          #
+          # 3. No persistence (default here):
+          #    - Fastest performance
+          #    - All data lost on restart
+          #    - OK for cache, NOT for session storage
+          #
           volumeMounts:
+            # MOUNT PATH: /data
+            # - Redis stores RDB/AOF files here
+            # - EmptyDir volume (ephemeral, lost on restart)
+            #
+            # FOR PERSISTENT REDIS:
+            # - Use PersistentVolume instead of EmptyDir
+            # - Add to volumeClaimTemplates (if using StatefulSet)
+            #
             - name: redis-data
               mountPath: /data
+      
+      ####################################################################
+      # VOLUMES
+      ####################################################################
+      
       volumes:
+        # REDIS DATA VOLUME (EmptyDir):
+        #
+        # EmptyDir:
+        # - Created when pod starts
+        # - Deleted when pod terminates
+        # - Stored on node's disk
+        #
+        # USE CASES:
+        # - Temporary cache (this Redis instance)
+        # - Scratch space for processing
+        # - Sharing data between containers in same pod
+        #
+        # NOT FOR:
+        # - Persistent data (use PersistentVolume)
+        # - Data that must survive pod restarts
+        #
+        # EmptyDir WITH MEMORY:
+        #   emptyDir:
+        #     medium: Memory
+        #   → Uses RAM instead of disk (faster, but uses pod memory limit)
+        #
         - name: redis-data
           emptyDir: {}
 ---
+################################################################################
+# REDIS HEADLESS SERVICE
+################################################################################
+#
+# WHY HEADLESS SERVICE FOR REDIS?
+#   - Consistency with PostgreSQL (both use headless)
+#   - Direct pod access if needed
+#   - Future-proof (if migrating to Redis Cluster or Sentinel)
+#
+# ALTERNATIVE:
+#   Use normal ClusterIP service (since Redis is Deployment, not StatefulSet)
+#   Only need headless if using StatefulSet with multiple replicas
+#
 apiVersion: v1
 kind: Service
+
 metadata:
   name: redis
   namespace: marketing-agent
+
 spec:
+  # CLUSTER IP: None (headless service)
+  # - DNS returns pod IP directly
+  # - No load balancing (only 1 replica anyway)
+  #
   clusterIP: None
+  
+  # SELECTOR:
   selector:
     app: redis
+  
+  # PORTS:
   ports:
+    # PORT: 6379 (Redis default)
     - port: 6379
       targetPort: 6379
+
+################################################################################
+# END OF DATABASES
+################################################################################
+#
+# HOW TO DEPLOY:
+#   kubectl apply -f databases.yaml
+#
+# HOW TO CHECK STATUS:
+#   kubectl get statefulset,deployment -n marketing-agent
+#   kubectl get pods -n marketing-agent -l app=postgres
+#   kubectl get pods -n marketing-agent -l app=redis
+#
+# HOW TO VIEW LOGS:
+#   kubectl logs -f <pod-name> -n marketing-agent
+#
+# HOW TO CONNECT TO POSTGRESQL:
+#   # From inside cluster:
+#   psql -h postgres.marketing-agent.svc.cluster.local -U postgres -d marketing_agent
+#
+#   # From local machine (port-forward):
+#   kubectl port-forward svc/postgres 5432:5432 -n marketing-agent
+#   psql -h localhost -U postgres -d marketing_agent
+#
+# HOW TO CONNECT TO REDIS:
+#   # From inside cluster:
+#   redis-cli -h redis.marketing-agent.svc.cluster.local
+#
+#   # From local machine (port-forward):
+#   kubectl port-forward svc/redis 6379:6379 -n marketing-agent
+#   redis-cli -h localhost
+#
+# HOW TO BACKUP POSTGRESQL:
+#   # Create backup:
+#   kubectl exec -it postgres-0 -n marketing-agent -- \
+#     pg_dump -U postgres marketing_agent > backup.sql
+#
+#   # Restore backup:
+#   kubectl exec -i postgres-0 -n marketing-agent -- \
+#     psql -U postgres marketing_agent < backup.sql
+#
+# HOW TO SCALE REDIS:
+#   kubectl scale deployment redis --replicas=3 -n marketing-agent
+#   # ⚠️ WARNING: Without Redis Cluster, only one replica handles writes
+#
+# HOW TO MIGRATE TO MANAGED SERVICE:
+#
+#   1. EXPORT DATA:
+#      PostgreSQL: pg_dump
+#      Redis: redis-cli --rdb dump.rdb
+#
+#   2. CREATE MANAGED INSTANCE:
+#      AWS: RDS PostgreSQL, ElastiCache Redis
+#      GCP: Cloud SQL, Memorystore
+#      Azure: Azure Database for PostgreSQL, Azure Cache for Redis
+#
+#   3. IMPORT DATA:
+#      PostgreSQL: psql -h rds-endpoint.amazonaws.com ...
+#      Redis: redis-cli -h elasticache-endpoint.amazonaws.com
+#
+#   4. UPDATE CONFIGMAP:
+#      DATABASE_HOST: rds-endpoint.amazonaws.com
+#      REDIS_HOST: elasticache-endpoint.amazonaws.com
+#
+#   5. RESTART APPLICATION:
+#      kubectl rollout restart deployment/marketing-agent-backend
+#
+#   6. DELETE K8S DATABASES:
+#      kubectl delete -f databases.yaml
+#
+# TROUBLESHOOTING:
+#
+#   PostgreSQL won't start:
+#   - Check logs: kubectl logs postgres-0 -n marketing-agent
+#   - Check PVC: kubectl get pvc -n marketing-agent
+#   - Check password: kubectl get secret marketing-agent-secrets -o yaml
+#
+#   Redis won't start:
+#   - Check logs: kubectl logs deployment/redis -n marketing-agent
+#   - Check resources: kubectl describe pod <redis-pod>
+#
+#   Backend can't connect to database:
+#   - Check DNS: kubectl exec <backend-pod> -- nslookup postgres
+#   - Check port: kubectl exec <backend-pod> -- nc -zv postgres 5432
+#   - Check password in Secret matches ConfigMap
+#
+# PERFORMANCE TUNING:
+#
+#   PostgreSQL:
+#   - Shared buffers: 25% of total memory
+#   - Max connections: 100-200 for small instances
+#   - Work mem: 4-16 MB per connection
+#   - Add to postgres pod env:
+#     POSTGRES_INITDB_ARGS: "-c shared_buffers=256MB -c max_connections=100"
+#
+#   Redis:
+#   - Maxmemory policy: allkeys-lru (evict least recently used)
+#   - Add to redis command:
+#     args: ["redis-server", "--maxmemory", "400mb", "--maxmemory-policy", "allkeys-lru"]
+#
+# MONITORING:
+#
+#   PostgreSQL metrics:
+#   - Queries per second (QPS)
+#   - Connection count
+#   - Cache hit ratio (should be > 90%)
+#   - Slow queries (pg_stat_statements extension)
+#
+#   Redis metrics:
+#   - Hit rate (should be > 80%)
+#   - Memory usage
+#   - Evicted keys
+#   - Commands per second
+#
+#   Prometheus exporters:
+#   - PostgreSQL: postgres-exporter
+#   - Redis: redis-exporter
+#
+################################################################################

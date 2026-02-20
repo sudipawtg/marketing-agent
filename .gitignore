@@ -58,3 +58,7 @@ Thumbs.db
 # Docker
 docker-compose.override.yml
 .history/
+
+# temp files
+tmp/
+learning/

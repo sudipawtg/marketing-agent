@@ -1,30 +1,359 @@
+################################################################################
+# CONFIGMAP
+################################################################################
+#
+# WHAT IS A CONFIGMAP?
+#   Kubernetes object that stores non-sensitive configuration data
+#   as key-value pairs
+#
+# PURPOSE:
+#   - Decouple configuration from application code
+#   - Change configuration without rebuilding Docker images
+#   - Share configuration across multiple pods
+#   - Environment-specific settings (dev, staging, prod)
+#
+# HOW IT'S USED:
+#   - Loaded as environment variables in backend/frontend containers
+#   - Can also be mounted as files (volumes)
+#
+# CONFIGMAP vs SECRET:
+#   ConfigMap:  Non-sensitive data (database host, ports, log levels)
+#   Secret:     Sensitive data (passwords, API keys, tokens)
+#
+# TWELVE-FACTOR APP METHODOLOGY:
+#   - Store config in environment (not in code)
+#   - Different config for each deployment (dev/staging/prod)
+#   - Never commit secrets to Git
+#
+################################################################################
+
 apiVersion: v1
 kind: ConfigMap
+
 metadata:
   name: marketing-agent-config
   namespace: marketing-agent
+
+# DATA SECTION:
+# Key-value pairs that become environment variables
+# All values must be strings (numbers must be quoted)
+#
 data:
+  ############################################################################
+  # APPLICATION SETTINGS
+  ############################################################################
+  
+  # ENVIRONMENT: Which environment is this?
+  # - "development": Local development
+  # - "staging": Pre-production testing
+  # - "production": Live production
+  #
+  # USED BY APPLICATION:
+  # - Enable/disable debug mode
+  # - Different logging verbosity
+  # - Feature flags
+  #
   ENVIRONMENT: "production"
+  
+  # LOG_LEVEL: How verbose should logging be?
+  # - "DEBUG": Everything (very verbose, development only)
+  # - "INFO": Normal operations (recommended for production)
+  # - "WARNING": Only warnings and errors
+  # - "ERROR": Only errors
+  #
+  # IMPACT:
+  # - DEBUG: Can log sensitive data (passwords, tokens) - NEVER in production
+  # - INFO: General operational messages
+  # - WARNING: Potential issues
+  # - ERROR: Critical failures only
+  #
   LOG_LEVEL: "INFO"
+  
+  ############################################################################
+  # DATABASE CONFIGURATION
+  ############################################################################
+  
+  # DATABASE_HOST: Where is the PostgreSQL database?
+  # - "postgres": Service name in Kubernetes (ClusterIP)
+  # - DNS resolves to: postgres.marketing-agent.svc.cluster.local
+  #
+  # ALTERNATIVES:
+  # - External database: "my-db.us-east-1.rds.amazonaws.com"
+  # - IP address: "10.0.1.100" (not recommended, use DNS)
+  #
   DATABASE_HOST: "postgres"
+  
+  # DATABASE_PORT: Which port is PostgreSQL listening on?
+  # - "5432": Default PostgreSQL port
+  # - Must be string (even though it's a number)
+  #
   DATABASE_PORT: "5432"
+  
+  # DATABASE_NAME: Which database to connect to?
+  # - "marketing_agent": Database created for this application
+  # - PostgreSQL instance can have multiple databases
+  #
   DATABASE_NAME: "marketing_agent"
+  
+  ############################################################################
+  # REDIS CONFIGURATION (CACHING)
+  ############################################################################
+  
+  # REDIS_HOST: Where is the Redis cache?
+  # - "redis": Service name in Kubernetes
+  # - Used for: Session storage, caching, rate limiting
+  #
   REDIS_HOST: "redis"
+  
+  # REDIS_PORT: Which port is Redis listening on?
+  # - "6379": Default Redis port
+  #
   REDIS_PORT: "6379"
+  
+  ############################################################################
+  # API SERVER CONFIGURATION
+  ############################################################################
+  
+  # API_HOST: Which interface should FastAPI bind to?
+  # - "0.0.0.0": Listen on all network interfaces
+  # - Allows external connections (from other pods)
+  #
+  # ALTERNATIVES:
+  # - "127.0.0.1": Only localhost (pod-internal only)
+  # - "0.0.0.0": All interfaces (recommended for Kubernetes)
+  #
   API_HOST: "0.0.0.0"
+  
+  # API_PORT: Which port should FastAPI listen on?
+  # - "8000": Standard FastAPI/uvicorn port
+  # - Must match containerPort in backend-deployment.yaml
+  #
   API_PORT: "8000"
+
 ---
+################################################################################
+# SECRET
+################################################################################
+#
+# WHAT IS A SECRET?
+#   Kubernetes object that stores sensitive data (passwords, API keys, tokens)
+#   Stored base64-encoded (NOT encrypted by default)
+#
+# PURPOSE:
+#   - Keep sensitive data out of ConfigMaps
+#   - Keep secrets out of Docker images
+#   - Enable secret rotation without rebuilding images
+#
+# SECURITY CONSIDERATIONS:
+#
+#   ⚠️ WARNING: Kubernetes Secrets are BASE64-ENCODED, NOT ENCRYPTED
+#
+#   Base64 is encoding, not encryption:
+#   - Anyone with read access to Secrets can decode them
+#   - kubectl get secret <name> -o jsonpath='{.data.DATABASE_PASSWORD}' | base64 -d
+#
+#   BETTER OPTIONS:
+#   1. Enable encryption at rest (Kubernetes feature)
+#   2. Use external secret management:
+#      - AWS Secrets Manager (with IRSA)
+#      - HashiCorp Vault
+#      - Google Secret Manager
+#      - Azure Key Vault
+#   3. Use External Secrets Operator (sync from external source)
+#
+#   RBAC:
+#   - Restrict who can view Secrets
+#   - Use different service accounts for different apps
+#   - Audit secret access
+#
+# STRINGDATA vs DATA:
+#   stringData: Plain text (Kubernetes encodes to base64)
+#   data:       Base64-encoded already
+#
+#   Use stringData for readability, Kubernetes converts to data field
+#
+################################################################################
+
 apiVersion: v1
 kind: Secret
+
 metadata:
   name: marketing-agent-secrets
   namespace: marketing-agent
+
+# TYPE: Opaque
+# - Generic secret type (arbitrary user-defined data)
+# - Other types: kubernetes.io/tls, kubernetes.io/dockerconfigjson
+#
 type: Opaque
+
+# STRINGDATA:
+# Plain text key-value pairs (Kubernetes base64-encodes them)
+#
 stringData:
-  # These should be replaced with actual secrets in production
-  # Use external secret management (e.g., HashiCorp Vault, AWS Secrets Manager)
+  ############################################################################
+  # ⚠️ PRODUCTION WARNING:
+  ############################################################################
+  #
+  # These are PLACEHOLDER VALUES for demonstration only
+  # NEVER commit real secrets to Git!
+  #
+  # FOR PRODUCTION:
+  # 1. Use external secret management:
+  #    - AWS Secrets Manager (retrieve with IRSA - see iam.tf)
+  #    - HashiCorp Vault (vault agent injection)
+  #    - Sealed Secrets (encrypted in Git, decrypted in cluster)
+  #
+  # 2. OR manually create secret:
+  #    kubectl create secret generic marketing-agent-secrets \
+  #      --from-literal=DATABASE_PASSWORD='real-password' \
+  #      --from-literal=OPENAI_API_KEY='sk-real-key' \
+  #      -n marketing-agent
+  #
+  # 3. OR use Helm values (encrypted with sops, helm-secrets):
+  #    helm install marketing-agent ./chart \
+  #      --set secrets.databasePassword='real-password'
+  #
+  ############################################################################
+  
+  # DATABASE_PASSWORD:
+  # Password for PostgreSQL user
+  #
+  # SECURITY:
+  # - Use strong passwords (20+ characters, mixed case, symbols)
+  # - Rotate regularly (every 90 days)
+  # - Never log this value
+  #
+  # EXAMPLE:
+  # DATABASE_PASSWORD: "P@ssw0rd123!secure"  # This is weak, use stronger
+  #
   DATABASE_PASSWORD: "changeme"
+  
+  # OPENAI_API_KEY:
+  # API key for OpenAI services (GPT-4, embeddings)
+  #
+  # OBTAINING KEY:
+  # - Sign up at https://platform.openai.com
+  # - Navigate to API keys section
+  # - Create new secret key
+  # - Format: sk-proj-... or sk-...
+  #
+  # SECURITY:
+  # - Treat as highly sensitive (costs money if leaked)
+  # - Set spending limits in OpenAI dashboard
+  # - Monitor usage for anomalies
+  #
+  # COST:
+  # - GPT-4: $0.03/1K input tokens, $0.06/1K output tokens
+  # - GPT-3.5-turbo: $0.0015/1K tokens (cheaper)
+  #
   OPENAI_API_KEY: "sk-changeme"
+  
+  # ANTHROPIC_API_KEY:
+  # API key for Anthropic Claude
+  #
+  # OBTAINING KEY:
+  # - Sign up at https://console.anthropic.com
+  # - Generate API key
+  # - Format: sk-ant-...
+  #
+  # USE CASE:
+  # - Alternative to OpenAI
+  # - Claude 3 models (Opus, Sonnet, Haiku)
+  # - Different pricing structure
+  #
   ANTHROPIC_API_KEY: "changeme"
+  
+  # REDIS_PASSWORD:
+  # Password for Redis authentication
+  #
+  # NOTE: Empty string = no password (OK for dev, NOT for production)
+  #
+  # FOR PRODUCTION:
+  # - Set requirepass in Redis configuration
+  # - Use strong password
+  # - Consider Redis ACLs (user-level permissions)
+  #
   REDIS_PASSWORD: ""
+  
+  # SECRET_KEY:
+  # Used for:
+  # - Signing session cookies
+  # - Generating CSRF tokens
+  # - Encrypting sensitive data
+  #
+  # REQUIREMENTS:
+  # - At least 32 characters
+  # - Random and unpredictable
+  # - Different for each environment
+  #
+  # GENERATING:
+  # Python:
+  #   python -c "import secrets; print(secrets.token_urlsafe(32))"
+  #
+  # OpenSSL:
+  #   openssl rand -base64 32
+  #
+  # PowerShell:
+  #   [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
+  #
   SECRET_KEY: "changeme-secret-key"
+
+################################################################################
+# END OF CONFIGMAP AND SECRET
+################################################################################
+#
+# HOW TO APPLY:
+#   kubectl apply -f configmap.yaml
+#
+# HOW TO VIEW:
+#   # ConfigMap (safe to view):
+#   kubectl get configmap marketing-agent-config -n marketing-agent -o yaml
+#
+#   # Secret (sensitive, requires permissions):
+#   kubectl get secret marketing-agent-secrets -n marketing-agent -o yaml
+#
+# HOW TO EDIT:
+#   # Edit live (NOT recommended for production):
+#   kubectl edit configmap marketing-agent-config -n marketing-agent
+#
+#   # Better: Edit file and reapply:
+#   kubectl apply -f configmap.yaml
+#
+# HOW TO DECODE SECRET:
+#   # View base64-encoded value:
+#   kubectl get secret marketing-agent-secrets -n marketing-agent \
+#     -o jsonpath='{.data.DATABASE_PASSWORD}'
+#
+#   # Decode (PowerShell):
+#   $encoded = kubectl get secret marketing-agent-secrets -n marketing-agent `
+#     -o jsonpath='{.data.DATABASE_PASSWORD}'
+#   [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($encoded))
+#
+#   # Decode (Linux/Mac):
+#   kubectl get secret marketing-agent-secrets -n marketing-agent \
+#     -o jsonpath='{.data.DATABASE_PASSWORD}' | base64 -d
+#
+# HOW TO UPDATE SECRET WITHOUT DOWNTIME:
+#   1. Create new secret with different name:
+#      kubectl create secret generic marketing-agent-secrets-v2 ...
+#
+#   2. Update deployment to use new secret:
+#      Edit backend-deployment.yaml → secretRef.name
+#
+#   3. Apply deployment (rolling update)
+#
+#   4. Delete old secret:
+#      kubectl delete secret marketing-agent-secrets -n marketing-agent
+#
+# BEST PRACTICES:
+#   ✅ Use external secret management (AWS Secrets Manager, Vault)
+#   ✅ Rotate secrets regularly
+#   ✅ Use different secrets for each environment
+#   ✅ Never commit secrets to Git (use .gitignore)
+#   ✅ Audit who has access to secrets (RBAC)
+#   ❌ Don't use weak passwords ("changeme", "password123")
+#   ❌ Don't share secrets across multiple applications
+#   ❌ Don't log secret values
+#
+################################################################################

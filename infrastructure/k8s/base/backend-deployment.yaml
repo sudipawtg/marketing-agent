@@ -1,167 +1,838 @@
-apiVersion: apps/v1
-kind: Deployment
+################################################################################
+# KUBERNETES BACKEND DEPLOYMENT MANIFEST
+################################################################################
+#
+# PURPOSE:
+#   Deploy the Marketing Agent backend application to Kubernetes
+#   Includes: Deployment, Service, and HorizontalPodAutoscaler
+#
+# WHAT IS A KUBERNETES MANIFEST?
+#   YAML file that declaratively describes desired resources
+#   You declare "what you want", Kubernetes figures out "how to do it"
+#
+# KUBERNETES RESOURCES IN THIS FILE:
+#   1. Deployment: Manages pods (application instances)
+#   2. Service: Network endpoint to access the pods
+#   3. HorizontalPodAutoscaler: Automatically scales pods based on load
+#
+# LEARNING NOTES:
+#   - YAML uses indentation (2 spaces) for structure
+#   - "---" separates multiple resources in one file
+#   - "apiVersion" and "kind" identify the resource type
+#   - "metadata" has resource name, labels, annotations
+#   - "spec" defines the desired state
+#
+################################################################################
+
+################################################################################
+# DEPLOYMENT
+################################################################################
+#
+# WHAT IS A DEPLOYMENT?
+#   Manages a set of identical pods (replicas)
+#   Ensures specified number of pods are always running
+#   Handles rolling updates (zero-downtime deployments)
+#
+# KEY FEATURES:
+#   - Self-healing: Restarts failed pods automatically
+#   - Scaling: Easily change number of replicas
+#   - Rolling updates: Update pods gradually (no downtime)
+#   - Rollback: Revert to previous version if update fails
+#
+# DEPLOYMENT CONTROLLER:
+#   Continuously monitors actual state vs desired state
+#   Takes corrective action if they don't match
+#   Example: If pod crashes, controller starts a new one
+#
+apiVersion: apps/v1  # API version for Deployments
+kind: Deployment     # Resource type
+
+# METADATA: Information about this resource
 metadata:
-  name: marketing-agent-backend
-  namespace: marketing-agent
+  name: marketing-agent-backend        # Deployment name (used in kubectl commands)
+  namespace: marketing-agent           # Kubernetes namespace (logical cluster subdivision)
+  
+  # LABELS: Key-value pairs for organizing resources
+  # Used for grouping, filtering, and selecting resources
   labels:
-    app: marketing-agent
-    component: backend
+    app: marketing-agent     # Application name
+    component: backend       # Which part of the app (backend, frontend, database)
+
+# SPEC: Desired state specification
 spec:
+  # REPLICAS: Number of pod copies to run
+  # - 3 replicas = 3 identical pods running simultaneously
+  # - Provides redundancy (if one fails, others handle traffic)
+  # - Enables load balancing across multiple instances
+  #
+  # WHY 3?
+  # - 1 replica: No redundancy (if it fails, downtime)
+  # - 2 replicas: Can cause split-brain scenarios
+  # - 3 replicas: Minimum for high availability (can lose 1 pod)
+  # - 5+ replicas: For high-traffic production
   replicas: 3
+  
+  # STRATEGY: How to update pods during deployment
   strategy:
-    type: RollingUpdate
+    type: RollingUpdate  # Update pods gradually (alternative: Recreate)
+    
+    # ROLLING UPDATE CONFIGURATION:
     rollingUpdate:
+      # maxSurge: Maximum extra pods during update
+      # - 1 = Can create 1 extra pod temporarily (total: 4 pods during update)
+      # - Ensures capacity during rollout
+      # - Higher value = faster rollout but more resources used
       maxSurge: 1
+      
+      # maxUnavailable: Maximum pods that can be down during update
+      # - 0 = At least 3 pods must be running at all times
+      # - Ensures zero downtime
+      # - Higher value = faster rollout but less availability
       maxUnavailable: 0
+  
+  # SELECTOR: How Deployment finds its pods
+  # Must match the labels in pod template below
   selector:
     matchLabels:
       app: marketing-agent
       component: backend
+  
+  # TEMPLATE: Pod specification (blueprint for creating pods)
   template:
+    # POD METADATA:
     metadata:
       labels:
         app: marketing-agent
         component: backend
+      
+      # ANNOTATIONS: Metadata that doesn't identify resources
+      # Used for configuration, not selection
       annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8000"
-        prometheus.io/path: "/metrics"
+        # PROMETHEUS METRICS:
+        # Tell Prometheus to scrape metrics from this pod
+        prometheus.io/scrape: "true"   # Enable scraping
+        prometheus.io/port: "8000"     # Port where metrics are exposed
+        prometheus.io/path: "/metrics" # Endpoint for metrics
+    
+    # POD SPEC: Defines pod's contents and behavior
     spec:
+      # SERVICE ACCOUNT:
+      # Identity that pods use to access Kubernetes API and AWS services (via IRSA)
+      # Links to IAM role defined in iam.tf
       serviceAccountName: marketing-agent
+      
+      # SECURITY CONTEXT (Pod-level):
+      # Security settings for all containers in this pod
       securityContext:
+        # runAsNonRoot: Enforce non-root user (security best practice)
+        # Prevents containers from running as root (UID 0)
         runAsNonRoot: true
+        
+        # runAsUser: Specific user ID to run containers
+        # 1000 = Standard UID for first non-root user
+        # Matches the user created in Dockerfile
         runAsUser: 1000
+        
+        # fsGroup: File system group ID
+        # Files created by containers get this group ownership
+        # Allows multiple containers to share volumes with same permissions
         fsGroup: 1000
       
+      ############################################################################
+      # INIT CONTAINERS
+      ############################################################################
+      #
+      # WHAT ARE INIT CONTAINERS?
+      #   Special containers that run BEFORE the main application container
+      #   Must complete successfully before app containers start
+      #
+      # USE CASES:
+      #   - Wait for dependencies (database, cache) to be ready
+      #   - Download configuration files
+      #   - Database migrations
+      #   - Security scanning
+      #
+      # CHARACTERISTICS:
+      #   - Run sequentially (one after another, not parallel)
+      #   - If any fails, Kubernetes restarts the pod
+      #   - Separate image from main container (can use lightweight images)
+      #
+      ############################################################################
+      
       initContainers:
+        # INIT CONTAINER 1: Wait for PostgreSQL
+        #
+        # PURPOSE: Don't start backend until database is ready
+        # WHY: Backend crashes if it can't connect to DB on startup
+        #
         - name: wait-for-postgres
-          image: busybox:1.36
+          image: busybox:1.36  # Tiny Linux image (1-2 MB) with basic utilities
+          
+          # COMMAND: Shell script to check PostgreSQL availability
+          # - nc: netcat (network utility to check TCP connections)
+          # - -z: Zero-I/O mode (just check if port is open, don't send data)
+          # - postgres: Service name (DNS resolves to postgres service)
+          # - 5432: PostgreSQL default port
+          #
+          # LOOP:
+          # - until: Repeat until nc succeeds
+          # - echo: Print message (visible in kubectl logs)
+          # - sleep 2: Wait 2 seconds between attempts
+          #
+          # EXIT:
+          # When nc succeeds (PostgreSQL is accepting connections), init container exits
           command: ['sh', '-c', 'until nc -z postgres 5432; do echo waiting for postgres; sleep 2; done;']
         
+        # INIT CONTAINER 2: Wait for Redis
+        #
+        # PURPOSE: Ensure Redis cache is ready before starting
+        # Same logic as PostgreSQL check above
+        #
         - name: wait-for-redis
           image: busybox:1.36
           command: ['sh', '-c', 'until nc -z redis 6379; do echo waiting for redis; sleep 2; done;']
       
+      ############################################################################
+      # APPLICATION CONTAINERS
+      ############################################################################
+      #
+      # Main application containers that run continuously
+      # These containers make up the actual backend service
+      #
+      ############################################################################
+      
       containers:
-        - name: backend
+        - name: backend  # Container name (shows in kubectl logs, kubectl exec)
+          
+          # CONTAINER IMAGE:
+          # Docker image to run
+          # Format: registry/organization/image:tag
           image: ghcr.io/your-org/marketing-agent-backend:latest
+          
+          # IMAGE PULL POLICY:
+          # - Always: Pull image every time pod starts (ensures latest version)
+          # - IfNotPresent: Pull only if not cached locally (faster, but may be stale)
+          # - Never: Never pull, must exist locally
+          #
+          # USE CASES:
+          # - Always: For :latest tag or rapid development
+          # - IfNotPresent: For pinned versions in production (e.g., :v1.2.3)
           imagePullPolicy: Always
+          
+          # PORTS:
+          # Expose ports from container
           ports:
-            - name: http
-              containerPort: 8000
-              protocol: TCP
+            - name: http              # Logical name (used in service)
+              containerPort: 8000     # Port the application listens on
+              protocol: TCP           # TCP or UDP
+          
+          ######################################################################
+          # ENVIRONMENT VARIABLES
+          ######################################################################
+          #
+          # Configure application behavior via environment variables
+          # Application reads these at startup
+          #
+          ######################################################################
           
           env:
+            # DATABASE_URL: PostgreSQL connection string
+            #
+            # FORMAT:
+            # postgresql://username:password@host:port/database
+            #
+            # VARIABLE SUBSTITUTION:
+            # $(VARIABLE_NAME) references another env var
+            # This builds the connection string dynamically from secrets/config
+            #
+            # WHY NOT HARDCODE?
+            # - Secrets (password) stored in Kubernetes Secret
+            # - Config (host, port) stored in ConfigMap
+            # - Separation of concerns (easier to change)
             - name: DATABASE_URL
               value: "postgresql://postgres:$(DATABASE_PASSWORD)@$(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)"
+            
+            # REDIS_URL: Redis cache connection string
+            # Format: redis://host:port
+            # No password in this example (should add for production)
             - name: REDIS_URL
               value: "redis://$(REDIS_HOST):$(REDIS_PORT)"
           
+          # envFrom: Load ALL variables from ConfigMap or Secret
+          #
+          # WHY USE envFrom?
+          # - Don't need to list every variable individually
+          # - ConfigMap/Secret can have dozens of variables
+          # - Cleaner manifest (less repetition)
+          #
+          # SOURCES:
+          # 1. ConfigMap: Non-sensitive configuration
+          # 2. Secret: Sensitive data (passwords, API keys)
+          #
           envFrom:
+            # CONFIGMAP REFERENCE:
+            # Loads all key-value pairs from ConfigMap as environment variables
+            # Example: DATABASE_HOST=postgres, DATABASE_PORT=5432
             - configMapRef:
                 name: marketing-agent-config
+            
+            # SECRET REFERENCE:
+            # Loads all key-value pairs from Secret as environment variables
+            # Example: DATABASE_PASSWORD=secret123, OPENAI_API_KEY=sk-...
+            # Secrets are base64 encoded at rest, decoded when loaded
             - secretRef:
                 name: marketing-agent-secrets
           
+          ######################################################################
+          # HEALTH CHECKS (PROBES)
+          ######################################################################
+          #
+          # WHAT ARE PROBES?
+          #   Health checks that Kubernetes runs periodically
+          #   Determines if container is healthy and ready to serve traffic
+          #
+          # THREE TYPES:
+          #   1. Liveness Probe: Is the container alive?
+          #      - If fails: Kubernetes restarts the container
+          #      - Use case: Detect deadlocks, infinite loops
+          #
+          #   2. Readiness Probe: Is the container ready to serve traffic?
+          #      - If fails: Remove from service load balancer
+          #      - Use case: Application is starting up or temporarily overloaded
+          #
+          #   3. Startup Probe: Has the container started? (not shown here)
+          #      - Use case: Slow-starting applications
+          #
+          # PROBE TYPES:
+          #   - httpGet: HTTP request (checks /health endpoint)
+          #   - exec: Run command inside container
+          #   - tcpSocket: Check if TCP port is accepting connections
+          #
+          ######################################################################
+          
+          # LIVENESS PROBE:
+          # Checks if application is still running (not deadlocked/crashed)
           livenessProbe:
             httpGet:
-              path: /health
-              port: http
+              path: /health              # Health check endpoint
+              port: http                 # Named port from ports section above
+            
+            # TIMING PARAMETERS:
+            #
+            # initialDelaySeconds: 30
+            # - Wait 30s after container starts before first check
+            # - Gives app time to initialize (connect to DB, load config)
+            # - Too short: False failures during startup
+            # - Too long: Slow to detect real failures
+            #
             initialDelaySeconds: 30
+            
+            # periodSeconds: 10
+            # - Check every 10 seconds after initial delay
+            # - Frequent checks = faster failure detection
+            # - Too frequent = unnecessary load on app
+            #
             periodSeconds: 10
+            
+            # timeoutSeconds: 5
+            # - Wait up to 5 seconds for response
+            # - Longer timeout = more patient (slower network)
+            # - Shorter timeout = stricter (fail fast)
+            #
             timeoutSeconds: 5
+            
+            # failureThreshold: 3
+            # - Must fail 3 consecutive checks to trigger restart
+            # - Prevents restart on transient failures (network blip)
+            # - Total time to restart: 30s initial + (10s * 3) = 60s
+            #
             failureThreshold: 3
           
+          # READINESS PROBE:
+          # Checks if application is ready to receive traffic
           readinessProbe:
             httpGet:
-              path: /health/ready
+              path: /health/ready        # Readiness check endpoint
               port: http
+            
+            # TIMING (more aggressive than liveness):
+            #
+            # initialDelaySeconds: 10 (shorter than liveness)
+            # - Start checking readiness earlier
+            # - OK to fail readiness during startup (just delays traffic)
+            #
             initialDelaySeconds: 10
+            
+            # periodSeconds: 5 (more frequent)
+            # - Check every 5 seconds
+            # - Quickly add pod back to service when it recovers
+            #
             periodSeconds: 5
+            
+            # timeoutSeconds: 3 (stricter)
+            # - Expect faster response for readiness
+            # - Slow response = not ready for production traffic
+            #
             timeoutSeconds: 3
+            
+            # failureThreshold: 3
+            # - After 3 failures, remove from service (stop sending traffic)
+            # - Pod keeps running (not restarted, unlike liveness)
+            #
             failureThreshold: 3
           
+          ######################################################################
+          # RESOURCE MANAGEMENT
+          ######################################################################
+          #
+          # WHAT ARE RESOURCE REQUESTS AND LIMITS?
+          #   Specify CPU and memory requirements for container
+          #   Critical for scheduling and cluster stability
+          #
+          # REQUESTS vs LIMITS:
+          #
+          #   REQUESTS (Guaranteed):
+          #   - Minimum resources reserved for this container
+          #   - Kubernetes scheduler uses this to choose which node
+          #   - Container guaranteed to get at least this much
+          #   - Node must have this available or pod won't schedule
+          #
+          #   LIMITS (Maximum):
+          #   - Maximum resources container can use
+          #   - If CPU limit exceeded: throttled (slowed down)
+          #   - If memory limit exceeded: killed (OOMKilled)
+          #   - Prevents one container from starving others
+          #
+          # QUALITY OF SERVICE (QoS):
+          #   Based on relationship between requests and limits:
+          #   - Guaranteed: requests == limits (highest priority)
+          #   - Burstable: requests < limits (can burst, may be throttled)
+          #   - BestEffort: No requests or limits (lowest priority, evicted first)
+          #
+          ######################################################################
+          
           resources:
+            # REQUESTS: Guaranteed resources
             requests:
+              # MEMORY: 512Mi = 512 Mebibytes (binary MB)
+              # - 1 Mi = 1,048,576 bytes
+              # - 512 Mi = 536,870,912 bytes (~537 MB in decimal)
+              #
+              # SIZING GUIDELINE:
+              # - Python/FastAPI base: ~150-200 MB
+              # - Libraries (pandas, numpy): ~100-200 MB
+              # - Application code: ~50-100 MB
+              # - Working memory: ~100-200 MB
+              # Total: ~512 MB for small workload
+              #
               memory: "512Mi"
+              
+              # CPU: 250m = 250 millicores = 0.25 CPU cores
+              # - 1000m = 1 full CPU core
+              # - 250m = 25% of one core
+              #
+              # SIZING GUIDELINE:
+              # - Idle Python app: ~50-100m
+              # - Light load: ~200-300m
+              # - Burst capacity: Up to limit (1000m)
+              #
               cpu: "250m"
+            
+            # LIMITS: Maximum resources
             limits:
+              # MEMORY LIMIT: 2Gi = 2 Gibibytes
+              # - 1 Gi = 1,073,741,824 bytes
+              # - 2 Gi = ~2.15 GB in decimal
+              #
+              # WHY 2Gi?
+              # - 4x the request (allows bursting for traffic spikes)
+              # - LLM operations can be memory-intensive
+              # - Caching, data processing needs headroom
+              #
+              # WHAT HAPPENS IF EXCEEDED?
+              # - Container is killed (OOMKilled)
+              # - Kubernetes restarts it (may cause downtime)
+              # - Check with: kubectl describe pod (look for OOMKilled)
+              #
               memory: "2Gi"
+              
+              # CPU LIMIT: 1000m = 1 full CPU core
+              # - 4x the request (can burst from 0.25 to 1.0 cores)
+              # - Allows handling traffic spikes
+              #
+              # WHAT HAPPENS IF EXCEEDED?
+              # - CPU is throttled (slowed down, not killed)
+              # - Application becomes slower but keeps running
+              # - No downtime, just degraded performance
+              #
               cpu: "1000m"
           
+          ######################################################################
+          # VOLUME MOUNTS
+          ######################################################################
+          #
+          # WHAT ARE VOLUME MOUNTS?
+          #   Attach storage volumes to specific paths in container filesystem
+          #
+          # WHY USE VOLUMES?
+          #   - Container filesystem is ephemeral (lost when container restarts)
+          #   - Volumes persist across container restarts
+          #   - Share data between containers
+          #   - Read configuration from Kubernetes resources
+          #
+          ######################################################################
+          
           volumeMounts:
+            # LOGS VOLUME:
+            # Mount EmptyDir volume for application logs
+            #
+            # PURPOSE:
+            # - Application writes logs to /app/logs
+            # - Logs visible via kubectl logs (stdout/stderr)
+            # - Can be collected by log aggregators (Fluentd, Filebeat)
+            #
+            # EmptyDir:
+            # - Created when pod starts
+            # - Deleted when pod terminates
+            # - Shared between all containers in same pod
+            # - Not persisted long-term (use PersistentVolume for that)
+            #
             - name: logs
-              mountPath: /app/logs
+              mountPath: /app/logs       # Path inside container
+          
+          ######################################################################
+          # CONTAINER SECURITY CONTEXT
+          ######################################################################
+          #
+          # Security settings specific to this container
+          # More restrictive than pod-level security context
+          #
+          ######################################################################
           
           securityContext:
+            # allowPrivilegeEscalation: false
+            # - Prevents process from gaining more privileges
+            # - Blocks setuid binaries and sudo-like behavior
+            # - Critical security hardening
+            #
             allowPrivilegeEscalation: false
+            
+            # readOnlyRootFilesystem: true
+            # - Container filesystem is read-only
+            # - Only mounted volumes are writable
+            # - Prevents malware from modifying system files
+            #
+            # NOTE: Application must write to volumes only (/app/logs)
+            # Fails if app tries to write to /tmp, /var, etc.
+            #
             readOnlyRootFilesystem: true
+            
+            # capabilities: drop: ALL
+            # - Remove all Linux capabilities
+            # - Capabilities are fine-grained privileges (e.g., NET_ADMIN, SYS_TIME)
+            # - Application doesn't need any special capabilities
+            #
+            # SECURITY BENEFIT:
+            # - Even if attacker gets shell, they can't use privileged operations
+            # - Can't sniff network, change system time, load kernel modules
+            #
             capabilities:
               drop:
-                - ALL
+                - ALL         # Drop all capabilities (most restrictive)
+      
+      ############################################################################
+      # VOLUMES
+      ############################################################################
+      #
+      # Define volumes that can be mounted by containers
+      # Volumes are pod-level (shared by all containers)
+      #
+      ############################################################################
       
       volumes:
+        # LOGS VOLUME (EmptyDir):
+        #
+        # WHAT IS EmptyDir?
+        # - Empty directory created when pod starts
+        # - Exists as long as pod exists
+        # - Deleted when pod is removed
+        # - Stored on node's disk or RAM (medium: Memory)
+        #
+        # USE CASES:
+        # - Temporary scratch space
+        # - Cache directories
+        # - Log files (before streaming to aggregator)
+        # - Sharing data between init containers and app containers
+        #
+        # NOT FOR:
+        # - Long-term storage (use PersistentVolume)
+        # - Data that must survive pod restart
+        #
         - name: logs
-          emptyDir: {}
+          emptyDir: {}      # Empty config = use node's disk
+
 ---
+################################################################################
+# SERVICE
+################################################################################
+#
+# WHAT IS A SERVICE?
+#   Stable network endpoint to access  pods
+#   Provides load balancing and service discovery
+#
+# WHY NEEDED?
+#   - Pods have dynamic IPs (change when pod restarts)
+#   - Service provides stable IP/DNS name
+#   - Load balances traffic across replicas
+#
+# SERVICE TYPES:
+#   - ClusterIP: Internal only (default) - used here
+#   - NodePort: Exposes on each node's IP
+#   - LoadBalancer: Cloud load balancer (AWS ELB, GCP LB)
+#   - ExternalName: DNS CNAME record
+#
 apiVersion: v1
 kind: Service
+
 metadata:
   name: marketing-agent-backend
   namespace: marketing-agent
   labels:
     app: marketing-agent
     component: backend
+
 spec:
+  # TYPE: ClusterIP (default)
+  # - Service accessible only within cluster
+  # - Gets a virtual IP from service CIDR range
+  # - Other pods can reach via DNS: marketing-agent-backend.marketing-agent.svc.cluster.local
+  #
   type: ClusterIP
+  
+  # PORTS: Map service port to container port
   ports:
-    - port: 8000
-      targetPort: http
-      protocol: TCP
-      name: http
+    - port: 8000              # Service listens on this port
+      targetPort: http        # Forward to container's "http" named port (8000)
+      protocol: TCP           # TCP or UDP
+      name: http              # Name for this port mapping
+  
+  # SELECTOR: Which pods does this service route to?
+  # Must match the labels on pods
+  # Service automatically discovers and load balances across matching pods
+  #
   selector:
     app: marketing-agent
     component: backend
+
 ---
+################################################################################
+# HORIZONTAL POD AUTOSCALER (HPA)
+################################################################################
+#
+# WHAT IS HPA?
+#   Automatically increases/decreases number of pod replicas
+#   based on CPU, memory, or custom metrics
+#
+# HOW IT WORKS:
+#   1. HPA checks metrics every 15 seconds (default)
+#   2. Calculates: desiredReplicas = ceil(currentReplicas * currentMetric / targetMetric)
+#   3. If desiredReplicas different from current, scales up/down
+#   4. Respects min/max replica bounds
+#
+# WHY USE IT?
+#   - Automatic capacity management (no manual intervention)
+#   - Cost optimization (scale down during low traffic)
+#   - Performance (scale up during high traffic)
+#   - Handles unpredictable load patterns
+#
+# METRICS SOURCES:
+#   - Resource metrics: CPU, memory (from metrics-server)
+#   - Custom metrics: Application metrics (from Prometheus adapter)
+#   - External metrics: Cloud provider metrics
+#
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
+
 metadata:
   name: marketing-agent-backend
   namespace: marketing-agent
+
 spec:
+  # SCALE TARGET:
+  # Which Deployment/ReplicaSet/StatefulSet to scale
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
     name: marketing-agent-backend
+  
+  # REPLICA BOUNDS:
+  #
+  # minReplicas: 3
+  # - Never scale below 3 pods
+  # - Ensures high availability even during low traffic
+  # - Can handle sudden traffic spikes
+  #
   minReplicas: 3
+  
+  # maxReplicas: 10
+  # - Never scale above 10 pods
+  # - Cost control (prevents runaway scaling)
+  # - Cluster capacity limit
+  #
+  # SIZING:
+  # - Staging: 3-5 replicas
+  # - Production: 5-20 replicas
+  # - High traffic: 20-100 replicas
+  #
   maxReplicas: 10
+  
+  # METRICS: What to scale based on
   metrics:
+    # METRIC 1: CPU Utilization
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
+          
+          # TARGET: 70% of CPU request
+          # - If average CPU across all pods > 70%, scale up
+          # - If average CPU < 70%, scale down
+          #
+          # CALCULATION:
+          # - Request is 250m per pod
+          # - 70% of 250m = 175m
+          # - If pod using > 175m consistently, add replicas
+          #
+          # WHY 70%?
+          # - Leaves headroom for bursts (up to 1000m limit)
+          # - Not too high (prevents saturation)
+          # - Not too low (prevents over-provisioning)
+          #
           averageUtilization: 70
+    
+    # METRIC 2: Memory Utilization
     - type: Resource
       resource:
         name: memory
         target:
           type: Utilization
+          
+          # TARGET: 80% of memory request
+          # - Request is 512Mi per pod
+          # - 80% of 512Mi = ~410Mi
+          # - If pod using > 410Mi consistently, scale up
+          #
+          # WHY 80%?
+          # - Memory usage is more stable than CPU
+          # - Higher threshold OK (less bursty)
+          # - Still leaves buffer before hitting limit (2Gi)
+          #
           averageUtilization: 80
+  
+  # BEHAVIOR: Fine-tune scaling behavior
+  #
+  # Controls how aggressively to scale up/down
+  # Prevents thrashing (rapid up/down cycles)
+  #
   behavior:
+    # SCALE DOWN POLICY:
     scaleDown:
+      # stabilizationWindowSeconds: 300 (5 minutes)
+      # - Wait 5 minutes before scaling down
+      # - Prevents scaling down too quickly
+      # - Gives time to see if traffic picks back up
+      #
+      # SCENARIO:
+      # - Traffic spike ends
+      # - HPA waits 5 minutes to confirm it's not temporary
+      # - Then gradually scales down
+      #
       stabilizationWindowSeconds: 300
+      
+      # POLICIES: How much to scale down at once
       policies:
         - type: Percent
-          value: 50
-          periodSeconds: 60
+          value: 50            # Scale down by at most 50% of current pods
+          periodSeconds: 60    # Every 60 seconds
+      
+      # EXAMPLE SCALE DOWN:
+      # - Start: 10 pods
+      # - After 5 min: Scale to 5 pods (50% decrease)
+      # - After 6 min: Scale to 3 pods (50% of 5, but min is 3)
+    
+    # SCALE UP POLICY:
     scaleUp:
+      # stabilizationWindowSeconds: 0
+      # - Scale up immediately (no waiting)
+      # - Traffic spikes need quick response
+      # - Cost of extra pods is low compared to downtime
+      #
       stabilizationWindowSeconds: 0
+      
+      # POLICIES: How much to scale up at once
+      # Two policies, HPA uses whichever scales more
       policies:
+        # POLICY 1: Percentage-based
         - type: Percent
-          value: 100
-          periodSeconds: 30
+          value: 100                 # Double the number of pods
+          periodSeconds: 30          # Can do this every 30 seconds
+        
+        # POLICY 2: Absolute number
         - type: Pods
-          value: 2
-          periodSeconds: 30
+          value: 2                   # Add 2 pods at a time
+          periodSeconds: 30          # Can do this every 30 seconds
+      
+      # selectPolicy: Max
+      # - Use whichever policy scales more aggressively
+      # - Early in scale-up: Doubling is more (Policy 1)
+      # - Later in scale-up: Adding 2 is safer (Policy 2)
+      #
+      # EXAMPLE SCALE UP:
+      # - Start: 3 pods
+      # - High load detected
+      # - After 30s: Scale to 6 pods (100% increase)
+      # - Still high load
+      # - After 60s: Scale to 8 pods (add 2, not double to 12)
+      # - Continue until load drops or hit maxReplicas (10)
+      #
       selectPolicy: Max
+
+################################################################################
+# END OF BACKEND DEPLOYMENT MANIFEST
+################################################################################
+#
+# HOW TO DEPLOY:
+#   kubectl apply -f backend-deployment.yaml
+#
+# HOW TO CHECK STATUS:
+#   kubectl get deployment marketing-agent-backend -n marketing-agent
+#   kubectl get pods -n marketing-agent -l component=backend
+#   kubectl get hpa marketing-agent-backend -n marketing-agent
+#
+# HOW TO VIEW LOGS:
+#   kubectl logs -f deployment/marketing-agent-backend -n marketing-agent
+#
+# HOW TO SCALE MANUALLY:
+#   kubectl scale deployment marketing-agent-backend --replicas=5 -n marketing-agent
+#
+# HOW TO UPDATE IMAGE:
+#   kubectl set image deployment/marketing-agent-backend \
+#     backend=ghcr.io/your-org/marketing-agent-backend:v2 \
+#     -n marketing-agent
+#
+# HOW TO ROLLBACK:
+#   kubectl rollout undo deployment/marketing-agent-backend -n marketing-agent
+#
+# TROUBLESHOOTING:
+#   - Pods not starting: kubectl describe pod <pod-name> -n marketing-agent
+#   - OOMKilled: Increase memory limits
+#   - CrashLoopBackOff: Check logs, fix application errors
+#   - ImagePullBackOff: Check image name and registry credentials
+#
+# MONITORING:
+#   - Grafana dashboard: Kubernetes / Compute Resources / Pod
+#   - Prometheus metrics: container_cpu_usage_seconds_total
+#   - kubectl top pods -n marketing-agent
+#
+################################################################################

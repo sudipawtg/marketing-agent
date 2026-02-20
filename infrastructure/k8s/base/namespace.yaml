@@ -1,7 +1,144 @@
+################################################################################
+# NAMESPACE
+################################################################################
+#
+# WHAT IS A NAMESPACE?
+#   Logical isolation boundary within a Kubernetes cluster
+#   Think of it as a virtual cluster within a physical cluster
+#
+# PURPOSE:
+#   - Organize resources (all marketing-agent resources in one namespace)
+#   - Isolate applications (marketing-agent vs other-app)
+#   - Apply policies per namespace (RBAC, resource quotas, network policies)
+#   - Multi-tenancy (different teams/projects share same cluster)
+#
+# DEFAULT NAMESPACES:
+#   - default: Where resources go if you don't specify a namespace
+#   - kube-system: Kubernetes system components (DNS, metrics-server)
+#   - kube-public: Public information, accessible to all users
+#   - kube-node-lease: Node heartbeat information
+#
+# HOW NAMESPACES WORK:
+#   - Each resource belongs to exactly one namespace
+#   - Resources in different namespaces are isolated
+#   - DNS names include namespace: service.namespace.svc.cluster.local
+#   - RBAC can restrict access per namespace
+#
+# WHEN TO USE NAMESPACES:
+#   ✅ Separate environments (dev, staging, prod) in one cluster
+#   ✅ Separate teams or projects (team-a, team-b)
+#   ✅ Isolate applications (frontend, backend, monitoring)
+#   ❌ Don't use for versioning (use labels instead: version=v1)
+#   ❌ Don't create too many (management overhead)
+#
+# REAL-WORLD EXAMPLE:
+#
+#   Cluster: production-us-east-1
+#   ├── Namespace: marketing-agent      ← This namespace
+#   │   ├── Pods: backend, frontend, postgres, redis
+#   │   ├── Services: marketing-agent-backend, marketing-agent-frontend
+#   │   └── ConfigMaps: marketing-agent-config
+#   ├── Namespace: analytics-platform
+#   │   └── ...other app resources...
+#   └── Namespace: monitoring
+#       └── Prometheus, Grafana, Alertmanager
+#
+################################################################################
+
 apiVersion: v1
 kind: Namespace
+
 metadata:
+  # NAME: Unique identifier for this namespace
+  # - Must be DNS-compatible (lowercase, no spaces)
+  # - Used in kubectl commands: kubectl get pods -n marketing-agent
+  #
   name: marketing-agent
+  
+  # LABELS: Metadata for organizing and selecting namespaces
   labels:
+    # name: Same as metadata.name (redundant but common pattern)
     name: marketing-agent
+    
+    # environment: Which environment is this?
+    # - "development": Local dev cluster
+    # - "staging": Pre-production testing
+    # - "production": Live production
+    #
+    # USE CASES:
+    # - Kubectl selectors: kubectl get ns -l environment=production
+    # - Monitoring: Grafana dashboards filtered by environment
+    # - Cost tracking: Cloud provider tags
+    #
     environment: production
+
+################################################################################
+# END OF NAMESPACE
+################################################################################
+#
+# HOW TO CREATE:
+#   kubectl apply -f namespace.yaml
+#   # OR
+#   kubectl create namespace marketing-agent
+#
+# HOW TO VIEW:
+#   kubectl get namespaces
+#   kubectl describe namespace marketing-agent
+#
+# HOW TO DELETE (⚠️ CAREFUL):
+#   kubectl delete namespace marketing-agent
+#   # This deletes ALL resources in the namespace (pods, services, etc.)
+#
+# HOW TO SET DEFAULT NAMESPACE (avoid typing -n every time):
+#   kubectl config set-context --current --namespace=marketing-agent
+#   # Now: kubectl get pods (automatically uses marketing-agent namespace)
+#
+# HOW TO VIEW RESOURCES IN NAMESPACE:
+#   kubectl get all -n marketing-agent
+#   kubectl get pods,services,deployments -n marketing-agent
+#
+# NAMESPACE QUOTAS (RESOURCE LIMITS):
+#   Prevent one namespace from consuming all cluster resources
+#
+#   Example ResourceQuota:
+#   ```yaml
+#   apiVersion: v1
+#   kind: ResourceQuota
+#   metadata:
+#     name: marketing-agent-quota
+#     namespace: marketing-agent
+#   spec:
+#     hard:
+#       requests.cpu: "10"        # Max 10 CPUs requested
+#       requests.memory: 20Gi     # Max 20 GB memory requested
+#       pods: "50"                # Max 50 pods
+#       services: "20"            # Max 20 services
+#   ```
+#
+# NAMESPACE NETWORK POLICIES:
+#   Control which pods can communicate with which pods
+#
+#   Example (deny all ingress by default):
+#   ```yaml
+#   apiVersion: networking.k8s.io/v1
+#   kind: NetworkPolicy
+#   metadata:
+#     name: default-deny-ingress
+#     namespace: marketing-agent
+#   spec:
+#     podSelector: {}  # Applies to all pods in namespace
+#     policyTypes:
+#       - Ingress
+#   ```
+#
+# BEST PRACTICES:
+#   ✅ One namespace per application or microservice suite
+#   ✅ Use labels for filtering and organization
+#   ✅ Apply resource quotas to prevent resource exhaustion
+#   ✅ Use network policies for security
+#   ✅ Name namespaces clearly (marketing-agent, not ma or app1)
+#   ❌ Don't put unrelated applications in same namespace
+#   ❌ Don't use default namespace for production workloads
+#   ❌ Don't create too many namespaces (harder to manage)
+#
+################################################################################

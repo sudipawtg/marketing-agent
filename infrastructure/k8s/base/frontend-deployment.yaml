@@ -1,125 +1,572 @@
+################################################################################
+# FRONTEND DEPLOYMENT
+################################################################################
+#
+# PURPOSE:
+#   Deploy the React/TypeScript frontend application served by Nginx
+#
+# WHAT IS FRONTEND?
+#   - React 18 single-page application (SPA)
+#   - Built with Vite for fast builds and hot module replacement
+#   - Served by Nginx web server (lightweight, high-performance)
+#   - Communicates with backend via REST API
+#
+# ARCHITECTURE:
+#   Browser → Ingress → Frontend Service → Frontend Pods (Nginx) → Static Files
+#                             ↓ API calls
+#                          Backend Service → Backend Pods (FastAPI)
+#
+# WHY NGINX?
+#   - Serves static files extremely fast (HTML, CSS, JS, images)
+#   - Low memory footprint (~10-20 MB)
+#   - Built-in caching and gzip compression
+#   - Battle-tested for production workloads
+#
+# DIFFERENCES FROM BACKEND:
+#   - No init containers (frontend doesn't need database/Redis)
+#   - Lower resource requirements (just serving files, no computation)
+#   - Different security context (Nginx runs as user 101, not 1000)
+#   - Different health check endpoints
+#
+################################################################################
+
 apiVersion: apps/v1
 kind: Deployment
+
 metadata:
   name: marketing-agent-frontend
   namespace: marketing-agent
   labels:
     app: marketing-agent
-    component: frontend
+    component: frontend       # Label to distinguish from backend
+
 spec:
+  ######################################################################
+  # REPLICA CONFIGURATION
+  ######################################################################
+  #
+  # replicas: 2
+  # - Fewer than backend (3) because:
+  #   - Static content is less resource-intensive
+  #   - Nginx can handle thousands of connections per instance
+  #   - Backend is the bottleneck, not frontend
+  #
+  # SIZING GUIDANCE:
+  # - Dev/Staging: 2 replicas (redundancy for updates)
+  # - Production: 3-5 replicas (handle higher traffic)
+  # - High traffic: HPA will scale up to maxReplicas
+  #
   replicas: 2
+  
+  ######################################################################
+  # UPDATE STRATEGY
+  ######################################################################
+  #
+  # ROLLING UPDATE:
+  # - Same as backend (zero-downtime updates)
+  # - maxSurge: 1 = Create 1 extra pod before killing old ones
+  # - maxUnavailable: 0 = Never have fewer than desired replicas
+  #
+  # UPDATE PROCESS:
+  # 1. Start: 2 pods running (v1)
+  # 2. Create 1 new pod (v2) → 3 pods total
+  # 3. Wait for new pod to be ready
+  # 4. Kill 1 old pod (v1) → 2 pods (1 v1, 1 v2)
+  # 5. Create another new pod (v2) → 3 pods (1 v1, 2 v2)
+  # 6. Kill last old pod (v1) → 2 pods (v2)
+  #
   strategy:
     type: RollingUpdate
     rollingUpdate:
       maxSurge: 1
       maxUnavailable: 0
+  
+  ######################################################################
+  # POD SELECTOR
+  ######################################################################
+  #
+  # Matches pods with these labels
+  # Must match the labels in template.metadata.labels
+  #
   selector:
     matchLabels:
       app: marketing-agent
       component: frontend
+  
+  ######################################################################
+  # POD TEMPLATE
+  ######################################################################
+  #
+  # Template for creating frontend pods
+  # Each pod runs one Nginx container serving React static files
+  #
   template:
     metadata:
       labels:
         app: marketing-agent
         component: frontend
+    
     spec:
+      ####################################################################
+      # SERVICE ACCOUNT
+      ####################################################################
+      #
+      # Kubernetes identity for this pod
+      # Used for RBAC (accessing Kubernetes API if needed)
+      #
+      # Frontend typically doesn't need special permissions
+      # But using service account is good practice for:
+      # - Future enhancements (feature flags from ConfigMap)
+      # - Audit logging
+      # - Consistent security posture
+      #
       serviceAccountName: marketing-agent
+      
+      ####################################################################
+      # POD SECURITY CONTEXT
+      ####################################################################
+      #
+      # Security settings applied to ALL containers in this pod
+      #
       securityContext:
+        # runAsNonRoot: true
+        # - Nginx cannot run as root (security requirement)
+        # - Protects against container escape exploits
+        #
         runAsNonRoot: true
-        runAsUser: 101  # nginx user
+        
+        # runAsUser: 101
+        # - Run as user ID 101 (nginx user in Alpine Linux)
+        # - Different from backend (1000)
+        # - Matches user in Dockerfile (see Dockerfile.frontend)
+        #
+        # WHY 101?
+        # - Alpine Linux nginx package uses UID 101 by default
+        # - Port 80 requires NET_BIND_SERVICE capability (see below)
+        #
+        runAsUser: 101
+        
+        # fsGroup: 101
+        # - All volumes mounted will be owned by group 101
+        # - Allows nginx user to write to volumes
+        #
         fsGroup: 101
+      
+      ####################################################################
+      # CONTAINERS
+      ####################################################################
       
       containers:
         - name: frontend
+          
+          # IMAGE:
+          # Nginx serving pre-built React static files
+          # Built with docker/Dockerfile.frontend
+          #
+          # BUILD PROCESS:
+          # 1. Builder stage: npm install, npm run build (Vite)
+          # 2. Runtime stage: Copy /dist to Nginx html directory
+          #
           image: ghcr.io/your-org/marketing-agent-frontend:latest
+          
+          # IMAGE PULL POLICY:
+          # Always = Always check registry for newer image
+          # Good for 'latest' tag (ensures updates are pulled)
+          # Use 'IfNotPresent' with version tags (v1.2.3) for faster starts
+          #
           imagePullPolicy: Always
+          
+          # PORTS:
           ports:
             - name: http
-              containerPort: 80
+              containerPort: 80      # Nginx listens on port 80
               protocol: TCP
           
+          ##################################################################
+          # HEALTH CHECKS (PROBES)
+          ##################################################################
+          #
+          # FRONTEND HEALTH CHECKS:
+          # - Simpler than backend (no database dependencies)
+          # - Faster response times (serving static files)
+          # - Shorter delays and timeouts
+          #
+          ##################################################################
+          
+          # LIVENESS PROBE:
+          # Checks if Nginx is still responding
           livenessProbe:
             httpGet:
-              path: /health
+              path: /health              # Health check endpoint (Nginx config)
               port: http
+            
+            # TIMING (faster than backend):
+            #
+            # initialDelaySeconds: 10
+            # - Nginx starts quickly (no database connections needed)
+            # - 10 seconds is generous for static file serving
+            #
             initialDelaySeconds: 10
+            
+            # periodSeconds: 10
+            # - Check every 10 seconds
+            #
             periodSeconds: 10
+            
+            # timeoutSeconds: 3
+            # - Static files respond instantly
+            # - 3 seconds is reasonable (includes network latency)
+            #
             timeoutSeconds: 3
+            
+            # failureThreshold: 3
+            # - Total time to restart: 10s initial + (10s * 3) = 40s
+            # - Faster than backend (60s)
+            #
             failureThreshold: 3
           
+          # READINESS PROBE:
+          # Checks if Nginx is ready to serve traffic
           readinessProbe:
             httpGet:
-              path: /health
+              path: /health              # Same as liveness
               port: http
+            
+            # TIMING (very aggressive):
+            #
+            # initialDelaySeconds: 5
+            # - Nginx is ready almost immediately
+            # - 5 seconds allows for config loading
+            #
             initialDelaySeconds: 5
+            
+            # periodSeconds: 5
+            # - Check every 5 seconds
+            #
             periodSeconds: 5
+            
+            # timeoutSeconds: 2
+            # - Fast response expected
+            #
             timeoutSeconds: 2
+            
+            # failureThreshold: 3
+            # - Total time to remove from service: 5s initial + (5s * 3) = 20s
+            #
             failureThreshold: 3
           
+          ##################################################################
+          # RESOURCE MANAGEMENT
+          ##################################################################
+          #
+          # FRONTEND RESOURCES:
+          # - Much lower than backend (no computation, just serving files)
+          # - Nginx is extremely efficient
+          #
+          ##################################################################
+          
           resources:
+            # REQUESTS:
             requests:
+              # MEMORY: 64Mi
+              # - Nginx base: ~10-20 MB
+              # - Cached files: ~20-30 MB
+              # - Working memory: ~10-20 MB
+              # Total: ~64 MB is comfortable
+              #
+              # COMPARISON:
+              # - Backend: 512 MB (8x more)
+              # - Frontend serves static files (no database, no LLMs)
+              #
               memory: "64Mi"
+              
+              # CPU: 50m = 0.05 cores = 5% of one core
+              # - Nginx is single-threaded for most operations
+              # - I/O bound, not CPU bound
+              # - Mostly waiting for network, not computing
+              #
+              # COMPARISON:
+              # - Backend: 250m (5x more)
+              # - Frontend just serves files, backend does AI reasoning
+              #
               cpu: "50m"
+            
+            # LIMITS:
             limits:
+              # MEMORY LIMIT: 256Mi
+              # - 4x the request (same burst ratio as backend)
+              # - Unlikely to hit this (static files don't grow in memory)
+              #
+              # WHAT IF EXCEEDED?
+              # - OOMKilled (very rare for Nginx)
+              # - Check for: memory leaks, misconfigured caching
+              #
               memory: "256Mi"
+              
+              # CPU LIMIT: 200m = 0.2 cores = 20% of one core
+              # - 4x the request
+              # - Allows handling traffic spikes
+              # - Nginx rarely needs more than this
+              #
+              # WHAT IF EXCEEDED?
+              # - CPU throttled (slower responses)
+              # - Typically happens during:
+              #   - Many concurrent connections
+              #   - Gzip compression (CPU-intensive)
+              #   - SSL/TLS termination (handled by Ingress, not here)
+              #
               cpu: "200m"
           
+          ##################################################################
+          # CONTAINER SECURITY CONTEXT
+          ##################################################################
+          #
+          # NGINX-SPECIFIC SECURITY:
+          # - Similar to backend, with one exception
+          #
+          ##################################################################
+          
           securityContext:
+            # allowPrivilegeEscalation: false
+            # - Standard security hardening
+            #
             allowPrivilegeEscalation: false
+            
+            # readOnlyRootFilesystem: true
+            # - Nginx cannot write to system directories
+            # - Must write to mounted volumes (/var/cache/nginx, /var/run)
+            #
             readOnlyRootFilesystem: true
+            
+            # CAPABILITIES:
             capabilities:
+              # DROP ALL:
+              # - Remove all Linux capabilities first
+              #
               drop:
                 - ALL
+              
+              # ADD NET_BIND_SERVICE:
+              # - Required to bind to port 80 (privileged port < 1024)
+              # - Without this: Nginx cannot listen on port 80
+              # - Alternative: Listen on port 8080 (unprivileged)
+              #
+              # WHY NEEDED?
+              # - Ports < 1024 require special permission
+              # - NET_BIND_SERVICE capability grants this
+              # - Non-root user (101) can bind to port 80
+              #
+              # SECURITY NOTE:
+              # - This is safe (only allows binding to ports)
+              # - Does NOT grant other privileges
+              # - Minimal capability for Nginx operation
+              #
               add:
                 - NET_BIND_SERVICE
           
+          ##################################################################
+          # VOLUME MOUNTS
+          ##################################################################
+          #
+          # NGINX REQUIRES WRITABLE DIRECTORIES:
+          #   - /var/cache/nginx: Cache for proxied responses
+          #   - /var/run: PID file and socket files
+          #
+          # WHY NEEDED?
+          # - readOnlyRootFilesystem = true (security)
+          # - Nginx needs to write to these directories
+          # - Use EmptyDir volumes (temporary, pod-local)
+          #
+          ##################################################################
+          
           volumeMounts:
+            # CACHE DIRECTORY:
+            # - Nginx caches proxied responses here
+            # - Improves performance for repeated requests
+            # - Cleared when pod restarts
+            #
             - name: cache
               mountPath: /var/cache/nginx
+            
+            # RUN DIRECTORY:
+            # - Nginx PID file (process ID)
+            # - Socket files for internal communication
+            # - Required for Nginx to start
+            #
             - name: run
               mountPath: /var/run
       
+      ####################################################################
+      # VOLUMES
+      ####################################################################
+      #
+      # EmptyDir volumes for Nginx writable directories
+      #
       volumes:
+        # NGINX CACHE:
+        # - Temporary cache cleared on pod restart
+        # - Not persistent (use PersistentVolume if needed)
+        #
         - name: cache
-          emptyDir: {}
+          emptyDir: {}      # Default: Use node's disk
+        
+        # NGINX RUN:
+        # - PID and socket files
+        # - Small size (few KB)
+        #
         - name: run
           emptyDir: {}
+
 ---
+################################################################################
+# FRONTEND SERVICE
+################################################################################
+#
+# WHAT IS THIS SERVICE?
+#   Stable network endpoint for frontend pods
+#   Load balances traffic across frontend replicas
+#
+# HOW IT WORKS:
+#   User → Ingress → Frontend Service → Frontend Pods (Nginx)
+#
+# DNS NAME:
+#   marketing-agent-frontend.marketing-agent.svc.cluster.local
+#
 apiVersion: v1
 kind: Service
+
 metadata:
   name: marketing-agent-frontend
   namespace: marketing-agent
   labels:
     app: marketing-agent
     component: frontend
+
 spec:
+  # TYPE: ClusterIP (internal only)
+  # - Not directly accessible from outside cluster
+  # - Ingress controller proxies to this service
+  #
   type: ClusterIP
+  
+  # PORTS:
   ports:
-    - port: 80
-      targetPort: http
+    - port: 80                # Service listens on port 80
+      targetPort: http        # Forward to container's "http" port (80)
       protocol: TCP
       name: http
+  
+  # SELECTOR:
+  # Route traffic to pods with matching labels
   selector:
     app: marketing-agent
     component: frontend
+
 ---
+################################################################################
+# FRONTEND HORIZONTAL POD AUTOSCALER
+################################################################################
+#
+# AUTOSCALING FRONTEND:
+#   - Frontend scales based on CPU only (no memory metric)
+#   - Lower replica count than backend (2-5 vs 3-10)
+#   - Simpler scaling behavior (no complex policies)
+#
+# WHY FEWER REPLICAS?
+#   - Nginx handles many concurrent connections per pod
+#   - Static content serving is less resource-intensive
+#   - Backend is typically the bottleneck
+#
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
+
 metadata:
   name: marketing-agent-frontend
   namespace: marketing-agent
+
 spec:
+  # SCALE TARGET:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
     name: marketing-agent-frontend
+  
+  # REPLICA BOUNDS:
+  #
+  # minReplicas: 2
+  # - Minimum for high availability
+  # - Allows zero-downtime updates
+  #
   minReplicas: 2
+  
+  # maxReplicas: 5
+  # - Half of backend (10)
+  # - Typically sufficient for static content
+  #
+  # SIZING:
+  # - Staging: 2-3 replicas
+  # - Production: 3-5 replicas
+  # - High traffic: 5-10 replicas (adjust maxReplicas if needed)
+  #
   maxReplicas: 5
+  
+  # METRICS:
+  # Only CPU (memory is stable for Nginx)
   metrics:
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
+          
+          # TARGET: 70% of CPU request
+          # - Request is 50m per pod
+          # - 70% of 50m = 35m
+          # - If pod using > 35m consistently, scale up
+          #
+          # WHY 70%?
+          # - Same as backend (consistent policy)
+          # - Leaves headroom for bursts
+          #
+          # TYPICAL SCENARIOS:
+          # - Low traffic: 10-20m per pod (no scaling)
+          # - Medium traffic: 40-50m per pod (scale to 3)
+          # - High traffic: 70+ per pod (scale to 4-5)
+          #
           averageUtilization: 70
+
+################################################################################
+# END OF FRONTEND DEPLOYMENT MANIFEST
+################################################################################
+#
+# HOW TO DEPLOY:
+#   kubectl apply -f frontend-deployment.yaml
+#
+# HOW TO CHECK STATUS:
+#   kubectl get deployment marketing-agent-frontend -n marketing-agent
+#   kubectl get pods -n marketing-agent -l component=frontend
+#   kubectl get hpa marketing-agent-frontend -n marketing-agent
+#
+# HOW TO VIEW LOGS:
+#   kubectl logs -f deployment/marketing-agent-frontend -n marketing-agent
+#
+# HOW TO TEST LOCALLY:
+#   kubectl port-forward svc/marketing-agent-frontend 8080:80 -n marketing-agent
+#   # Open browser: http://localhost:8080
+#
+# TROUBLESHOOTING:
+#   - 403 Forbidden: Check Nginx config, file permissions
+#   - 404 Not Found: Check if static files are in correct directory (/usr/share/nginx/html)
+#   - Blank page: Check browser console for JavaScript errors
+#   - API calls fail: Check backend service, CORS configuration
+#
+# NGINX CONFIGURATION:
+#   - Located in Docker image: /etc/nginx/nginx.conf
+#   - Custom config in Dockerfile.frontend
+#   - Key settings:
+#     * Gzip compression enabled
+#     * SPA routing (try_files for React Router)
+#     * API proxy to backend:8000
+#     * Security headers (X-Frame-Options, etc.)
+#
+################################################################################

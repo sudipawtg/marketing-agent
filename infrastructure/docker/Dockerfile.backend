@@ -1,64 +1,330 @@
-# Multi-stage Dockerfile for Marketing Agent Backend
-# Stage 1: Builder
+################################################################################
+# MULTI-STAGE DOCKERFILE FOR MARKETING AGENT BACKEND
+################################################################################
+#
+# PURPOSE:
+#   Build a production-ready Docker image for the Python FastAPI backend
+#   Uses multi-stage build pattern to minimize final image size and improve security
+#
+# WHAT IS A MULTI-STAGE BUILD?
+#   A Dockerfile with multiple FROM statements
+#   Each FROM creates a new "stage" (temporary image)
+#   Final stage only copies what it needs from previous stages
+#   Result: Smaller, more secure production images
+#
+# WHY MULTI-STAGE?
+#   - Stage 1 (builder): Has build tools (gcc, g++, dev libraries)
+#   - Stage 2 (runtime): Only has runtime dependencies
+#   - Build tools add ~500MB but aren't needed at runtime
+#   - Smaller image = Faster deployment, less attack surface
+#
+# IMAGE SIZE COMPARISON:
+#   - Single stage: ~1.5GB (includes build tools)
+#   - Multi-stage: ~400MB (only runtime)
+#   - Savings: ~70% smaller image
+#
+# STAGES IN THIS DOCKERFILE:
+#   1. Builder: Install dependencies and compile Python packages
+#   2. Runtime: Copy compiled packages and run the application
+#
+# SECURITY FEATURES:
+#   - Non-root user (appuser)
+#   - Minimal base image (python:3.11-slim)
+#   - No unnecessary packages
+#   - Health checks
+#   - Read-only filesystem where possible
+#
+# LEARNING NOTES:
+#   - "COPY --from=builder": Copy from previous stage
+#   - "RUN --no-cache-dir": Don't store pip cache (smaller image)
+#   - "apt-get clean": Remove package manager cache
+#   - "slim" images: Debian with minimal packages (~150MB vs 1GB for full)
+#
+################################################################################
+
+################################################################################
+# STAGE 1: BUILDER
+################################################################################
+#
+# PURPOSE:
+#   Install system dependencies and compile Python packages
+#   This stage contains build tools (gcc, make, etc.) needed to compile native extensions
+#
+# BASE IMAGE:
+#   python:3.11-slim
+#   - Debian-based minimal Python image
+#   - Size: ~150MB (vs ~1GB for full python image)
+#   - Includes: Python 3.11, pip, basic system libraries
+#   - Excludes: Build tools (we install them next)
+#
+# WHY SLIM vs ALPINE?
+#   - Slim (Debian): Compatible with most Python packages, faster builds
+#   - Alpine (musl libc): Smaller but compatibility issues with some packages
+#   - For Python, slim is generally recommended (better compatibility)
+#
+################################################################################
+
 FROM python:3.11-slim as builder
 
-# Set working directory
+# SET WORKING DIRECTORY
+# All subsequent commands run from this directory
+# Similar to 'cd /app' in a shell
 WORKDIR /app
 
-# Install system dependencies
+# INSTALL SYSTEM BUILD DEPENDENCIES
+#
+# WHY THESE PACKAGES?
+# - build-essential: gcc, g++, make (to compile Python C extensions)
+# - curl: HTTP client (useful for health checks, downloads)
+# - git: Version control (some pip packages install from git)
+#
+# apt-get update: Refresh package index
+# apt-get install -y: Install without prompting
+# --no-install-recommends: Don't install suggested packages (smaller image)
+# rm -rf /var/lib/apt/lists/*: Delete package cache (saves ~100MB)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# COPY PYTHON DEPENDENCY FILE
+# pyproject.toml: Modern Python project configuration (PEP 518)
+# Contains: dependencies, package metadata, build configuration
+# Similar to: package.json (Node.js), Gemfile (Ruby), pom.xml (Java)
 COPY pyproject.toml ./
+
+# INSTALL PYTHON DEPENDENCIES
+#
+# pip install --no-cache-dir: Don't store downloaded packages (saves space)
+# --upgrade pip: Ensure latest pip version (security and features)
+# -e .: Install package in "editable" mode (development-friendly)
+#
+# WHAT HAPPENS:
+# 1. pip reads pyproject.toml
+# 2. Downloads all dependencies from PyPI
+# 3. Compiles packages with native extensions (e.g., psycopg2, cryptography)
+# 4. Installs everything to /usr/local/lib/python3.11/site-packages
+#
+# WHY NO CACHE?
+# - pip normally caches downloaded packages (~500MB)
+# - Cache not useful in Docker (each build starts fresh)
+# - Saves space in final image
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -e .
 
-# Stage 2: Runtime
+################################################################################
+# STAGE 2: RUNTIME
+################################################################################
+#
+# PURPOSE:
+#   Create a minimal production image with only runtime dependencies
+#   Copies compiled packages from builder stage, excludes build tools
+#
+# BASE IMAGE:
+#   Fresh python:3.11-slim (no build tools)
+#   Only contains Python runtime and basic system libraries
+#
+################################################################################
+
 FROM python:3.11-slim
 
-# Create non-root user
+# CREATE NON-ROOT USER
+#
+# WHY NON-ROOT?
+# - Security best practice: limit damage if container is compromised
+# - Many Kubernetes security policies require non-root
+# - Follows principle of least privilege
+#
+# COMMANDS:
+# - useradd: Create system user
+#   -m: Create home directory (/home/appuser)
+#   -u 1000: User ID (standard for first non-root user)
+# - mkdir: Create directories for app and logs
+# - chown: Set appuser as owner of /app directory
+#
+# UID 1000:
+#   Common convention for first non-root user
+#   Makes it easy to match with host user (for volume mounts)
 RUN useradd -m -u 1000 appuser && \
     mkdir -p /app /app/logs && \
     chown -R appuser:appuser /app
 
 WORKDIR /app
 
-# Install runtime dependencies only
+# INSTALL RUNTIME DEPENDENCIES ONLY
+#
+# WHY THESE PACKAGES?
+# - libpq5: PostgreSQL client library (for psycopg2)
+# - curl: Health checks and HTTP requests
+#
+# NO BUILD TOOLS:
+#   Note we don't install build-essential here
+#   Dependencies are already compiled in builder stage
+#
+# SIZE SAVINGS:
+#   Runtime dependencies: ~50MB
+#   Build dependencies: ~500MB
+#   Savings: 90% smaller
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Python packages from builder
+# COPY PYTHON PACKAGES FROM BUILDER STAGE
+#
+# COPY --from=builder: Copy from previous stage (not from host)
+# source: /usr/local/lib/python3.11/site-packages (all installed packages)
+# destination: Same path in this stage
+#
+# WHAT'S COPIED:
+# - All pip-installed packages
+# - Compiled C extensions
+# - Python bytecode
+# - ~300MB of Python libraries
+#
+# WHAT'S NOT COPIED:
+# - Build tools (gcc, g++, make)
+# - pip cache
+# - Temporary build files
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+
+# Copy Python executables (uvicorn, alembic, etc.)
 COPY --from=builder /usr/local/bin /usr/local/bin
 
-# Copy application code
+# COPY APPLICATION CODE
+#
+# --chown=appuser:appuser: Set ownership to non-root user
+#
+# APPLICATION STRUCTURE:
+# - src/: Main application code (FastAPI app, agents, database)
+# - alembic.ini: Database migration configuration
+# - prompts/: LLM prompt templates (optional, if exists)
+# - pyproject.toml: Package metadata (needed for editable install)
 COPY --chown=appuser:appuser src/ ./src/
 COPY --chown=appuser:appuser alembic.ini ./
 COPY --chown=appuser:appuser prompts/ ./prompts/
-
-# Copy configuration
 COPY --chown=appuser:appuser pyproject.toml ./
 
-# Switch to non-root user
+# SWITCH TO NON-ROOT USER
+#
+# All subsequent commands run as appuser
+# Container process will run as appuser (not root)
+#
+# SECURITY BENEFIT:
+# - If attacker escapes application, they're not root
+# - Can't install packages, modify system files, read secrets
 USER appuser
 
-# Expose port
+# EXPOSE PORT
+#
+# DOCUMENTATION ONLY:
+# - Doesn't actually open the port (Kubernetes does that)
+# - Tells Docker/K8s which port the app listens on
+# - FastAPI/Uvicorn serves on 8000 by default
 EXPOSE 8000
 
-# Health check
+# HEALTH CHECK
+#
+# WHAT IT DOES:
+# - Docker/Kubernetes runs this command periodically
+# - If it fails 3 times, container marked as unhealthy
+# - Kubernetes will restart unhealthy containers
+#
+# OPTIONS:
+# - --interval=30s: Check every 30 seconds
+# - --timeout=10s: Wait up to 10 seconds for response
+# - --start-period=40s: Wait 40s before first check (app startup time)
+# - --retries=3: Mark unhealthy after 3 failed checks
+#
+# COMMAND:
+# - curl -f: Fail on HTTP error codes (4xx, 5xx)
+# - http://localhost:8000/health: Health check endpoint
+# - || exit 1: If curl fails, exit with error code
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Set environment variables
+# ENVIRONMENT VARIABLES
+#
+# PYTHONUNBUFFERED=1:
+# - Print output immediately (don't buffer)
+# - Important for logs in Docker/Kubernetes
+# - Without this, logs may be delayed or lost
+#
+# PYTHONDONTWRITEBYTECODE=1:
+# - Don't create .pyc files (Python bytecode)
+# - Smaller image, faster startup
+# - Not needed in containers (image is thrown away)
+#
+# PATH:
+# - Add appuser's local bin to PATH
+# - Allows running installed Python scripts
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/home/appuser/.local/bin:$PATH"
 
-# Run database migrations and start the application
+# CONTAINER STARTUP COMMAND
+#
+# CMD vs RUN:
+# - RUN: Executes during image build (baked into image)
+# - CMD: Executes when container starts (can be overridden)
+#
+# WHAT THIS DOES:
+# 1. Run database migrations: alembic upgrade head
+#    - Creates/updates database tables
+#    - Applies any pending schema changes
+#    - Idempotent (safe to run multiple times)
+#
+# 2. Start web server: uvicorn src.api.main:app
+#    - uvicorn: Fast ASGI web server
+#    - src.api.main:app: Python module and FastAPI app object
+#    - --host 0.0.0.0: Listen on all interfaces (required for Docker)
+#    - --port 8000: Listen on port 8000
+#    - --workers 4: Run 4 worker processes (multi-core support)
+#
+# WHY sh -c?
+# - Allows chaining commands with &&
+# - If migrations fail, server won't start
+#
+# PRODUCTION CONSIDERATIONS:
+# - Consider separate migration job (don't run on every pod start)
+# - Adjust workers based on CPU cores (typically 2-4x cores)
+# - Add --reload flag for development (auto-restart on code changes)
 CMD ["sh", "-c", "alembic upgrade head && uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --workers 4"]
+
+################################################################################
+# END OF DOCKERFILE
+################################################################################
+#
+# HOW TO BUILD:
+#   docker build -t marketing-agent-backend:latest -f infrastructure/docker/Dockerfile.backend .
+#
+# HOW TO RUN LOCALLY:
+#   docker run -p 8000:8000 \
+#     -e DATABASE_URL=postgresql://user:pass@localhost/db \
+#     -e REDIS_URL=redis://localhost:6379 \
+#     -e OPENAI_API_KEY=sk-... \
+#     marketing-agent-backend:latest
+#
+# IMAGE SIZE OPTIMIZATION TIPS:
+#   - Use multi-stage builds (this Dockerfile does)
+#   - Use slim/alpine base images
+#   - Clean up package manager caches
+#   - Combine RUN commands to reduce layers
+#   - Use .dockerignore to exclude unnecessary files
+#
+# SECURITY BEST PRACTICES:
+#   ✅ Non-root user
+#   ✅ Minimal base image
+#   ✅ No hardcoded secrets
+#   ✅ Health checks
+#   ✅ Explicit dependencies
+#   - Consider: vulnerability scanning (Snyk, Trivy)
+#   - Consider: read-only filesystem (requires tmp volume)
+#
+# MONITORING:
+#   - View logs: docker logs <container_id>
+#   - Check health: docker inspect --format='{{.State.Health.Status}}' <container_id>
+#   - Resource usage: docker stats <container_id>
+#
+################################################################################

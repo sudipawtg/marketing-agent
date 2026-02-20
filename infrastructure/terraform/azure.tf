@@ -1,26 +1,211 @@
-# Azure Infrastructure Module
+################################################################################
+# AZURE Infrastructure Module
+################################################################################
+#
+# PURPOSE:
+#   Provision complete Azure infrastructure for Marketing Agent platform including:
+#   - AKS (Azure Kubernetes Service) cluster v1.28
+#   - Virtual Network (VNet) with custom subnets
+#   - Azure Database for PostgreSQL Flexible Server
+#   - Azure Cache for Redis
+#   - Azure Container Registry (ACR) for Docker images
+#   - Log Analytics Workspace for monitoring
+#   - Role-based access control (RBAC) for AKS-ACR integration
+#
+# ARCHITECTURE:
+#   ┌─────────────────────────────────────────────────────────┐
+#   │         Azure Region (e.g., East US)                    │
+#   │  ┌──────────────────────────────────────────────────┐   │
+#   │  │  Resource Group: {cluster-name}-rg               │   │
+#   │  │                                                   │   │
+#   │  │  ┌────────────────────────────────────────────┐  │   │
+#   │  │  │  Virtual Network: 10.0.0.0/16              │  │   │
+#   │  │  │                                             │  │   │
+#   │  │  │  ┌──────────────────────────────────────┐  │  │   │
+#   │  │  │  │  AKS Subnet: 10.0.1.0/24             │  │  │   │
+#   │  │  │  │  - AKS nodes                         │  │  │   │
+#   │  │  │  │  - Standard_D2_v2 VMs                │  │  │   │
+#   │  │  │  │  - Autoscaling (2-6 nodes)           │  │  │   │
+#   │  │  │  └──────────────────────────────────────┘  │  │   │
+#   │  │  │                                             │  │   │
+#   │  │  │  ┌──────────────────────────────────────┐  │  │   │
+#   │  │  │  │  DB Subnet: 10.0.2.0/24              │  │  │   │
+#   │  │  │  │  - PostgreSQL Flexible Server        │  │  │   │
+#   │  │  │  │  - Private endpoint (no public IP)   │  │  │   │
+#   │  │  │  └──────────────────────────────────────┘  │  │   │
+#   │  │  └─────────────────────────────────────────────┘  │   │
+#   │  │                                                     │   │
+#   │  │  [Azure Container Registry - ACR]                  │   │
+#   │  │  [Azure Cache for Redis]                           │   │
+#   │  │  [Log Analytics Workspace]                         │   │
+#   │  └─────────────────────────────────────────────────────┘   │
+#   └─────────────────────────────────────────────────────────────┘
+#
+# AZURE-SPECIFIC CONCEPTS:
+#
+#   Resource Group:
+#   - Logical container for Azure resources
+#   - All resources in this module belong to one resource group
+#   - Similar to AWS tags but stronger (affects permissions, lifecycle)
+#   - When you delete a resource group, all resources inside are deleted
+#
+#   System-Assigned Managed Identity:
+#   - Azure's way to give resources (like AKS) an identity
+#   - No need to manage credentials/passwords
+#   - Similar to AWS IAM roles for EC2 instances
+#   - Automatically rotated and managed by Azure
+#
+#   Subnet Delegation:
+#   - Assigns a subnet exclusively to a specific Azure service
+#   - Required for PostgreSQL Flexible Server private networking
+#   - Service can inject network interfaces directly into subnet
+#
+#   Azure CNI vs kubenet:
+#   - kubenet: Pods get IPs from a separate CIDR (simpler, cheaper)
+#   - Azure CNI: Pods get IPs from VNet (better integration, uses more IPs)
+#   - We use Azure CNI for better network performance
+#
+#   Private DNS Zone:
+#   - DNS service for private name resolution within VNet
+#   - Required for PostgreSQL private endpoints
+#   - Format: privatelink.postgres.database.azure.com
+#
+# RESOURCES CREATED:
+#   - 1 Resource Group (container for all resources)
+#   - 1 Virtual Network (10.0.0.0/16)
+#   - 2 Subnets (AKS, Database)
+#   - 1 AKS Cluster (regional, 3+ zones)
+#   - 1 Node Pool (Standard_D2_v2, autoscaling 2-6)
+#   - 1 Azure Container Registry (Standard SKU)
+#   - 1 PostgreSQL Flexible Server (B_Standard_B1ms)
+#   - 1 PostgreSQL Database (marketing_agent)
+#   - 1 Azure Cache for Redis (Basic C0)
+#   - 1 Log Analytics Workspace (30-day retention)
+#   - 1 Private DNS Zone (for PostgreSQL)
+#   - 1 Role Assignment (AKS → ACR access)
+#
+# CONDITIONAL CREATION:
+#   All resources only created when: var.cloud_provider == "azure"
+#
+# COST ESTIMATE (Staging):
+#   - AKS Control Plane: $75/month (managed service fee)
+#   - VMs (3x Standard_D2_v2): ~$210/month
+#   - PostgreSQL (B_Standard_B1ms): ~$25/month
+#   - Azure Cache for Redis (Basic C0): ~$17/month
+#   - Container Registry (Standard): ~$20/month
+#   - Log Analytics: ~$10/month (based on ingestion)
+#   - Networking: ~$15/month
+#   Total: ~$372/month
+#
+# COST ESTIMATE (Production):
+#   - AKS Control Plane: $75/month
+#   - VMs (5x Standard_D4s_v3): ~$730/month
+#   - PostgreSQL (GP_Gen5_2, HA): ~$250/month
+#   - Azure Cache for Redis (Standard C1): ~$75/month
+#   - Container Registry (Premium): ~$165/month
+#   - Log Analytics: ~$50/month
+#   - Networking + Load Balancer: ~$50/month
+#   Total: ~$1,395/month
+#
+# SECURITY FEATURES:
+#   - Network isolation (private subnets)
+#   - Managed identities (no password management)
+#   - Private endpoints for database (no public access)
+#   - Azure Policy enabled (governance and compliance)
+#   - Container scanning in ACR
+#   - TLS 1.2 minimum for Redis
+#   - Azure Monitor integration
+#   - RBAC for all resources
+#
+# HIGH AVAILABILITY:
+#   - AKS nodes spread across availability zones
+#   - Node pool autoscaling (maintain capacity)
+#   - PostgreSQL zone-redundant HA (production)
+#   - Redis Standard_HA tier (production)
+#   - Automated backups (7 days retention)
+#
+# LEARNING NOTES:
+#   - Azure uses "Resource Groups" as primary organizational unit
+#   - Azure regions have "Availability Zones" (like AWS AZs)
+#   - "SKU" = Stock Keeping Unit (pricing tier)
+#   - Azure naming: AKS (not EKS), ACR (not ECR), VNet (not VPC)
+#   - Azure CLI command: az (e.g., az aks get-credentials)
+#
+################################################################################
+
+# =============================================================================
+# PROVIDER CONFIGURATION
+# =============================================================================
+# Configure the Azure provider
+# The "features" block is required but can be empty for default behavior
 
 provider "azurerm" {
-  features {}
+  features {}  # Required block (empty uses defaults)
 }
 
-# Resource Group
+################################################################################
+# RESOURCE GROUP
+################################################################################
+#
+# WHAT IS A RESOURCE GROUP?
+#   A container that holds related Azure resources
+#   All resources must belong to exactly one resource group
+#
+# WHY USE IT?
+#   - Organize resources by project/environment/team
+#   - Apply policies and permissions at group level
+#   - Manage lifecycle together (delete all at once)
+#   - Track costs by group
+#
+# NAMING CONVENTION:
+#   {cluster-name}-rg
+#   Example: marketing-agent-cluster-rg
+#
+# LOCATION:
+#   The region where resource metadata is stored
+#   Resources inside can be in different regions (but typically same)
+#
+################################################################################
+
 resource "azurerm_resource_group" "main" {
   count    = var.cloud_provider == "azure" ? 1 : 0
-  name     = "${var.cluster_name}-rg"
-  location = var.azure_location
+  name     = "${var.cluster_name}-rg"  # e.g., "marketing-agent-cluster-rg"
+  location = var.azure_location         # e.g., "eastus", "westeurope"
 
+  # TAGS
+  # Key-value pairs for organization and cost tracking
+  # Inherited by resources in this group (unless overridden)
   tags = {
-    Environment = var.environment
-    ManagedBy   = "Terraform"
+    Environment = var.environment  # staging, production
+    ManagedBy   = "Terraform"      # Who/what manages this
   }
 }
 
-# Virtual Network
+################################################################################
+# VIRTUAL NETWORK (VNet)
+################################################################################
+#
+# WHAT IS A VNet?
+#   Azure's private network (equivalent to AWS VPC)
+#   Isolated network where your resources communicate securely
+#
+# ADDRESS SPACE:
+#   10.0.0.0/16 = 65,536 IP addresses total
+#   - 10.0.1.0/24 = 256 IPs for AKS (subnet 1)
+#   - 10.0.2.0/24 = 256 IPs for PostgreSQL (subnet 2)
+#   - Remaining space available for future subnets
+#
+# WHY /16?
+#   - Large enough for growth
+#   - Standard private IP range (RFC 1918)
+#   - Won't conflict with common on-premises networks
+#
+################################################################################
+
 resource "azurerm_virtual_network" "main" {
   count               = var.cloud_provider == "azure" ? 1 : 0
   name                = "${var.cluster_name}-vnet"
-  address_space       = ["10.0.0.0/16"]
+  address_space       = ["10.0.0.0/16"]  # Total IP space for this VNet
   location            = azurerm_resource_group.main[0].location
   resource_group_name = azurerm_resource_group.main[0].name
 
@@ -29,31 +214,72 @@ resource "azurerm_virtual_network" "main" {
   }
 }
 
-# Subnet for AKS
+################################################################################
+# SUBNET FOR AKS
+################################################################################
+#
+# WHAT IS A SUBNET?
+#   A segment of the VNet with a subset of the IP address range
+#   Resources in a subnet can communicate easily with each other
+#
+# THIS SUBNET:
+#   For AKS cluster nodes (Kubernetes worker VMs)
+#   10.0.1.0/24 = 256 IP addresses
+#   - Azure reserves 5 IPs per subnet (first 4 and last 1)
+#   - Usable IPs: 251
+#   - Enough for ~200 nodes (accounting for load balancers, etc.)
+#
+################################################################################
+
 resource "azurerm_subnet" "aks" {
   count                = var.cloud_provider == "azure" ? 1 : 0
   name                 = "${var.cluster_name}-aks-subnet"
   resource_group_name  = azurerm_resource_group.main[0].name
   virtual_network_name = azurerm_virtual_network.main[0].name
-  address_prefixes     = ["10.0.1.0/24"]
+  address_prefixes     = ["10.0.1.0/24"]  # IP range for AKS nodes
 }
 
-# Subnet for PostgreSQL
+################################################################################
+# SUBNET FOR POSTGRESQL DATABASE
+################################################################################
+#
+# WHAT'S DIFFERENT HERE?
+#   This subnet has two special configurations:
+#   1. Service Endpoints: Allow direct access to Azure services
+#   2. Delegation: Subnet is exclusively for PostgreSQL
+#
+# SERVICE ENDPOINTS:
+#   - Optimized network path to Azure SQL service
+#   - Traffic stays on Azure backbone (doesn't go to internet)
+#   - Better security and performance
+#
+# DELEGATION:
+#   - Assigns subnet exclusively to PostgreSQL Flexible Server
+#   - Azure can inject network interfaces for the database
+#   - Required for PostgreSQL private networking
+#
+################################################################################
+
 resource "azurerm_subnet" "db" {
   count                = var.cloud_provider == "azure" ? 1 : 0
   name                 = "${var.cluster_name}-db-subnet"
   resource_group_name  = azurerm_resource_group.main[0].name
   virtual_network_name = azurerm_virtual_network.main[0].name
-  address_prefixes     = ["10.0.2.0/24"]
+  address_prefixes     = ["10.0.2.0/24"]  # IP range for database
 
+  # SERVICE ENDPOINTS
+  # Allow direct access to Azure SQL service
+  # Traffic doesn't leave Azure network (more secure, faster)
   service_endpoints = ["Microsoft.Sql"]
 
+  # SUBNET DELEGATION
+  # Dedicate this subnet exclusively to PostgreSQL Flexible Servers
   delegation {
-    name = "fs"
+    name = "fs"  # Flexible Server
     service_delegation {
       name = "Microsoft.DBforPostgreSQL/flexibleServers"
       actions = [
-        "Microsoft.Network/virtualNetworks/subnets/join/action",
+        "Microsoft.Network/virtualNetworks/subnets/join/action",  # Join subnet
       ]
     }
   }

@@ -1,32 +1,316 @@
+################################################################################
+# ROLE-BASED ACCESS CONTROL (RBAC)
+################################################################################
+#
+# WHAT IS RBAC?
+#   Security system that controls WHO can do WHAT in Kubernetes
+#   Based on roles, not individual users
+#
+# THREE KEY CONCEPTS:
+#
+#   1. ServiceAccount (WHO):
+#      Identity for pods (like a user account for applications)
+#      Pods use ServiceAccount to authenticate with Kubernetes API
+#
+#   2. Role (WHAT):
+#      Set of permissions (what actions are allowed)
+#      Example: "read ConfigMaps", "list Pods"
+#
+#   3. RoleBinding (WHO + WHAT):
+#      Connects ServiceAccount to Role
+#      Grants the ServiceAccount the permissions defined in Role
+#
+# ROLE vs CLUSTERROLE:
+#   Role:        Namespace-scoped (only works in one namespace)
+#   ClusterRole: Cluster-scoped (works across all namespaces)
+#
+# ANALOGY:
+#   - ServiceAccount = Employee badge
+#   - Role = Job description ("Database Admin can read/write databases")
+#   - RoleBinding = Assigning job to employee ("Alice is Database Admin")
+#
+# WHY NEEDED?
+#   - Security: Principle of least privilege (grant minimum permissions)
+#   - Compliance: Audit who has access to what
+#   - Multi-tenancy: Isolate different applications
+#
+################################################################################
+
+################################################################################
+# SERVICE ACCOUNT
+################################################################################
+#
+# WHAT IS A SERVICE ACCOUNT?
+#   Kubernetes identity for pods (not human users)
+#   Used by applications to authenticate with Kubernetes API
+#
+# DEFAULT BEHAVIOR:
+#   If you don't specify serviceAccountName in pod spec:
+#   - Pods use "default" service account
+#   - Limited permissions (usually just API discovery)
+#
+# WHEN TO CREATE CUSTOM SERVICE ACCOUNT?
+#   - Application needs to interact with Kubernetes API
+#   - Read ConfigMaps/Secrets dynamically
+#   - List pods in same namespace
+#   - Create/delete resources (operators, controllers)
+#
+# EXAMPLE USE CASES:
+#   - Feature flag system (reads ConfigMap)
+#   - Service mesh sidecar (lists pods)
+#   - CI/CD runner (creates deployments)
+#
 apiVersion: v1
 kind: ServiceAccount
+
 metadata:
   name: marketing-agent
   namespace: marketing-agent
+
+# AUTHENTICATION:
+# Kubernetes automatically mounts a token at:
+#   /var/run/secrets/kubernetes.io/serviceaccount/token
+#
+# Application can use this token to call Kubernetes API:
+#   curl -H "Authorization: Bearer $(cat /var/run/.../token)" \
+#     https://kubernetes.default.svc/api/v1/namespaces/marketing-agent/configmaps
+
 ---
+################################################################################
+# ROLE
+################################################################################
+#
+# WHAT IS A ROLE?
+#   Defines a set of permissions (API actions allowed)
+#   Namespace-scoped (only applies to one namespace)
+#
+# PERMISSION MODEL:
+#   - Whitelist (deny by default, explicitly allow)
+#   - If not listed in rules, it's denied
+#
+# RULE STRUCTURE:
+#   apiGroups: Which API group (core API is "")
+#   resources:  Which resource types (pods, secrets, etc.)
+#   verbs:      Which actions (get, list, create, delete)
+#
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
+
 metadata:
   name: marketing-agent
   namespace: marketing-agent
+
 rules:
-  - apiGroups: [""]
-    resources: ["configmaps", "secrets"]
-    verbs: ["get", "list"]
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list"]
+  ############################################################################
+  # RULE 1: Read ConfigMaps and Secrets
+  ############################################################################
+  #
+  # PURPOSE:
+  # - Application can dynamically read configuration
+  # - No need to restart pods when config changes
+  # - Feature flags, A/B testing
+  #
+  # VERBS:
+  # - get: Read a specific ConfigMap/Secret by name
+  # - list: List all ConfigMaps/Secrets in namespace
+  #
+  # NOT ALLOWED (not in verbs list):
+  # - create: Cannot create new ConfigMaps/Secrets
+  # - update: Cannot modify existing ConfigMaps/Secrets
+  # - delete: Cannot delete ConfigMaps/Secrets
+  # - watch: Cannot watch for changes (real-time updates)
+  #
+  - apiGroups: [""]           # Core API group (v1)
+    resources:
+      - "configmaps"          # Read ConfigMaps
+      - "secrets"             # Read Secrets (⚠️ sensitive)
+    verbs:
+      - "get"                 # Read by name
+      - "list"                # List all in namespace
+  
+  ############################################################################
+  # RULE 2: Read Pods
+  ############################################################################
+  #
+  # PURPOSE:
+  # - List other pods in same namespace
+  # - Service discovery (find backend pods from frontend)
+  # - Health checking (check if related pods are running)
+  #
+  # USE CASE:
+  # - Admin UI showing pod status
+  # - Custom load balancer or proxy
+  # - Blue/green deployment logic
+  #
+  # SECURITY:
+  # - Can only read pods (cannot create/delete)
+  # - Cannot exec into pods (would need "pods/exec" resource)
+  # - Cannot read pod logs (would need "pods/log" resource)
+  #
+  - apiGroups: [""]           # Core API group
+    resources:
+      - "pods"                # Read pods
+    verbs:
+      - "get"                 # Read specific pod
+      - "list"                # List all pods
+  
+  ############################################################################
+  # WHAT'S NOT ALLOWED?
+  ############################################################################
+  #
+  # This Role does NOT grant permission to:
+  # - Create/delete pods (no "create", "delete" verbs)
+  # - Modify deployments (no "apps" apiGroup)
+  # - Read events (no "events" resource)
+  # - Access nodes (no "nodes" resource - cluster-scoped anyway)
+  # - Create services (no "services" resource)
+  # - Modify RBAC (no "rbac.authorization.k8s.io" apiGroup)
+  #
+  # This is intentionally restrictive (principle of least privilege)
+  #
+
 ---
+################################################################################
+# ROLE BINDING
+################################################################################
+#
+# WHAT IS A ROLE BINDING?
+#   Connects a ServiceAccount to a Role
+#   Grants the ServiceAccount the permissions defined in the Role
+#
+# ROLEBINDING vs CLUSTERROLEBINDING:
+#   RoleBinding:        Namespace-scoped (grants permissions in one namespace)
+#   ClusterRoleBinding: Cluster-scoped (grants permissions cluster-wide)
+#
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
+
 metadata:
   name: marketing-agent
   namespace: marketing-agent
+
+# ROLEREF: Which Role to bind
+#
+# IMPORTANT:
+# - Cannot change roleRef after creation (immutable)
+# - To change role: Delete and recreate RoleBinding
+#
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: marketing-agent
+  name: marketing-agent           # The Role defined above
+
+# SUBJECTS: Who gets these permissions
+#
+# Can bind to:
+# - ServiceAccount (pods)
+# - User (human)
+# - Group (multiple users)
+#
 subjects:
   - kind: ServiceAccount
-    name: marketing-agent
-    namespace: marketing-agent
+    name: marketing-agent         # The ServiceAccount defined above
+    namespace: marketing-agent    # Must be in same namespace
+
+################################################################################
+# END OF RBAC CONFIGURATION
+################################################################################
+#
+# HOW TO APPLY:
+#   kubectl apply -f rbac.yaml
+#
+# HOW TO VIEW:
+#   kubectl get serviceaccount -n marketing-agent
+#   kubectl get role -n marketing-agent
+#   kubectl get rolebinding -n marketing-agent
+#
+# HOW TO CHECK PERMISSIONS:
+#   # Check if service account can perform action:
+#   kubectl auth can-i get configmaps \
+#     --as=system:serviceaccount:marketing-agent:marketing-agent \
+#     -n marketing-agent
+#   # Output: yes or no
+#
+# HOW TO VIEW PERMISSIONS:
+#   kubectl describe role marketing-agent -n marketing-agent
+#   kubectl describe rolebinding marketing-agent -n marketing-agent
+#
+# HOW TO DEBUG PERMISSION DENIED ERRORS:
+#   1. Check pod is using correct service account:
+#      kubectl get pod <pod-name> -n marketing-agent -o yaml | grep serviceAccountName
+#
+#   2. Check service account exists:
+#      kubectl get sa marketing-agent -n marketing-agent
+#
+#   3. Check role binding exists:
+#      kubectl get rolebinding marketing-agent -n marketing-agent
+#
+#   4. Check permissions:
+#      kubectl auth can-i <verb> <resource> \
+#        --as=system:serviceaccount:<namespace>:<serviceaccount> \
+#        -n <namespace>
+#
+# COMMON RBAC PATTERNS:
+#
+#   1. READ-ONLY ACCESS (what we have here):
+#      verbs: ["get", "list"]
+#      Use case: Applications reading configuration
+#
+#   2. FULL ACCESS (dangerous):
+#      verbs: ["*"]
+#      resources: ["*"]
+#      Use case: Cluster administrators only
+#
+#   3. CI/CD DEPLOYER:
+#      verbs: ["get", "list", "create", "update", "patch", "delete"]
+#      resources: ["deployments", "services", "configmaps"]
+#      Use case: CI/CD pipeline deploying applications
+#
+#   4. MONITORING ACCESS:
+#      verbs: ["get", "list"]
+#      resources: ["pods", "nodes", "services", "endpoints"]
+#      Use case: Prometheus scraping metrics
+#
+# API GROUPS REFERENCE:
+#
+#   Core API (apiGroups: [""]):
+#   - pods, services, configmaps, secrets, persistentvolumeclaims, namespaces
+#
+#   apps (apiGroups: ["apps"]):
+#   - deployments, statefulsets, daemonsets, replicasets
+#
+#   batch (apiGroups: ["batch"]):
+#   - jobs, cronjobs
+#
+#   networking.k8s.io (apiGroups: ["networking.k8s.io"]):
+#   - ingresses, networkpolicies
+#
+#   rbac.authorization.k8s.io (apiGroups: ["rbac.authorization.k8s.io"]):
+#   - roles, rolebindings, clusterroles, clusterrolebindings
+#
+# VERBS REFERENCE:
+#
+#   Read operations:
+#   - get: Read specific resource by name
+#   - list: List all resources of a type
+#   - watch: Stream changes (real-time updates)
+#
+#   Write operations:
+#   - create: Create new resource
+#   - update: Replace existing resource (full replacement)
+#   - patch: Modify specific fields of existing resource
+#   - delete: Delete resource
+#   - deletecollection: Delete multiple resources at once
+#
+# SECURITY BEST PRACTICES:
+#   ✅ Use custom ServiceAccounts (not "default")
+#   ✅ Grant minimum permissions needed (principle of least privilege)
+#   ✅ Separate service accounts for different components
+#   ✅ Use RoleBindings (namespace-scoped) over ClusterRoleBindings
+#   ✅ Audit RBAC regularly (kubectl get rolebindings --all-namespaces)
+#   ❌ Don't grant cluster-admin to service accounts
+#   ❌ Don't use verbs: ["*"] unless absolutely necessary
+#   ❌ Don't grant secret read access unless required
+#   ❌ Don't reuse same service account across namespaces
+#
+################################################################################

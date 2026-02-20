@@ -1,100 +1,438 @@
-# Multi-stage Dockerfile for Marketing Agent Frontend
-# Stage 1: Build
+################################################################################
+# MULTI-STAGE DOCKERFILE FOR MARKETING AGENT FRONTEND
+################################################################################
+#
+# PURPOSE:
+#   Build a production-ready Docker image for the React/TypeScript frontend
+#   Serves optimized static files via Nginx web server
+#
+# WHAT IS A MULTI-STAGE BUILD?
+#   Stage 1 (builder): Build React app with Node.js (creates static HTML/CSS/JS)
+#   Stage 2 (runtime): Serve static files with Nginx (lightweight web server)
+#
+# WHY MULTI-STAGE?
+#   - Builder has Node.js, npm, build tools (~1GB)
+#   - Runtime only has Nginx + static files (~50MB)
+#   - Result: 95% smaller production image
+#
+# IMAGE SIZE COMPARISON:
+#   - With Node.js runtime: ~1.2GB
+#   - With Nginx runtime: ~50MB
+#   - Savings: 96% smaller
+#
+# NGINX vs NODE.JS FOR SERVING:
+#   Nginx:
+#   - Purpose-built web server (handles 10,000+ concurrent connections)
+#   - Extremely fast static file serving
+#   - Low memory footprint (~5MB)
+#   - Battle-tested, secure
+#
+#   Node.js:
+#   - Application runtime, not optimized for static files
+#   - Higher memory usage (~100MB+)
+#   - Slower for static content
+#   - Only needed for SSR (server-side rendering)
+#
+# TECHNOLOGIES:
+#   - Node.js 18: JavaScript runtime for building
+#   - npm: Package manager
+#   - Vite: Modern build tool (fast, optimized)
+#   - React: UI framework
+#   - TypeScript: Type-safe JavaScript
+#   - Nginx: Web server
+#
+# SECURITY FEATURES:
+#   - Non-root user (nginx)
+#   - Security headers (XSS protection, frame options)
+#   - Gzip compression (faster load times)
+#   - Health checks
+#
+################################################################################
+
+################################################################################
+# STAGE 1: BUILDER
+################################################################################
+#
+# PURPOSE:
+#   Build the React application using Node.js
+#   Transforms TypeScript/JSX into static HTML, CSS, and JavaScript
+#
+# BASE IMAGE:
+#   node:18-alpine
+#   - Alpine Linux: Minimal OS (~5MB vs ~100MB for Debian)
+#   - Node.js 18: Current LTS version (Long-Term Support)
+#   - npm: Package manager included
+#
+# WHY ALPINE?
+#   - Much smaller than debian/ubuntu images
+#   - Security: Fewer packages = smaller attack surface
+#   - Fast: Quick to download and start
+#   - Good for build stages (doesn't need full OS)
+#
+################################################################################
+
 FROM node:18-alpine as builder
 
-# Set working directory
+# SET WORKING DIRECTORY
+# All subsequent commands execute from /app
 WORKDIR /app
 
-# Copy package files
+# COPY PACKAGE FILES
+#
+# WHY COPY THESE FIRST?
+# - Docker layer caching optimization
+# - If package files haven't changed, reuse cached node_modules
+# - Only re-install dependencies when they actually change
+#
+# WHAT ARE THESE FILES?
+# - package.json: Lists dependencies and scripts
+# - package-lock.json: Locks exact dependency versions (reproducible builds)
 COPY package*.json ./
 
-# Install dependencies
+# INSTALL DEPENDENCIES
+#
+# npm ci vs npm install:
+# - npm ci: "Clean Install" - designed for CI/CD
+#   * Faster (optimized for automation)
+#   * Installs exact versions from package-lock.json
+#   * Fails if lock file is out of sync
+#   * Deletes node_modules first (clean state)
+# - npm install: Interactive, updates lock file if needed
+#
+# --only=production=false:
+#   Install ALL dependencies (including devDependencies)
+#   devDependencies needed for building: TypeScript, Vite, ESLint, etc.
 RUN npm ci --only=production=false
 
-# Copy source code
+# COPY SOURCE CODE
+# Copy all application files (see .dockerignore for exclusions)
 COPY . .
 
-# Build the application
+# BUILD THE APPLICATION
+#
+# WHAT 'npm run build' DOES:
+# 1. Runs Vite build process
+# 2. Compiles TypeScript to JavaScript
+# 3. Bundles all JS/CSS files
+# 4. Minifies code (removes whitespace, shortens variable names)
+# 5. Optimizes images and assets
+# 6. Generates static files in /app/dist directory
+#
+# OUTPUT:
+# - /app/dist/index.html: Entry point
+# - /app/dist/assets/*.js: Minified JavaScript bundles
+# - /app/dist/assets/*.css: Minified CSS
+# - /app/dist/*.png, *.svg: Optimized images
+#
+# OPTIMIZATIONS:
+# - Code splitting: Separate bundles for different routes
+# - Tree shaking: Remove unused code
+# - Compression: Smaller file sizes
+# - Cache busting: Filenames include content hash
 RUN npm run build
 
-# Stage 2: Production with Nginx
+################################################################################
+# STAGE 2: PRODUCTION RUNTIME
+################################################################################
+#
+# PURPOSE:
+#   Serve the built static files using Nginx web server
+#   Lightweight, fast, and secure production setup
+#
+# BASE IMAGE:
+#   nginx:1.25-alpine
+#   - Nginx 1.25: Latest stable version
+#   - Alpine: Minimal OS (total image ~50MB)
+#
+################################################################################
+
 FROM nginx:1.25-alpine
 
-# Install curl for health checks
-RUN apk add --no-cache curl
+# INSTALL CURL FOR HEALTH CHECKS
+#
+# apk: Alpine's package manager (like apt on Debian)
+# --no-cache: Don't store package index (keeps image smaller)
+RUN apk add --no-cache  curl
 
-# Copy custom nginx config
+# CUSTOM NGINX CONFIGURATION
+#
+# HEREDOC SYNTAX (<<EOF ... EOF):
+#   Creates file inline without separate COPY command
+#   Convenient for small config files
+#
+# WHY CUSTOM CONFIG?
+#   Default Nginx config is basic
+#   We add: compression, security headers, SPA routing, API proxy
+#
+# NGINX CONFIGURATION SECTIONS EXPLAINED BELOW:
 COPY <<EOF /etc/nginx/conf.d/default.conf
 server {
-    listen 80;
-    server_name _;
-    root /usr/share/nginx/html;
-    index index.html;
+    # BASIC SETTINGS
+    listen 80;                 # Listen on port 80 (HTTP)
+    server_name _;             # Accept requests for any hostname
+    root /usr/share/nginx/html; # Directory with static files
+    index index.html;          # Default file to serve
 
-    # Gzip compression
-    gzip on;
-    gzip_vary on;
-    gzip_min_length 1024;
+    # GZIP COMPRESSION
+    #
+    # WHY GZIP?
+    # - Compresses text files before sending (HTML, CSS, JS, JSON)
+    # - Reduces bandwidth by 60-80%
+    # - Faster page loads (especially on slow connections)
+    # - Minimal CPU cost (worth the tradeoff)
+    #
+    gzip on;                   # Enable gzip compression
+    gzip_vary on;              # Tell proxies that response varies by encoding
+    gzip_min_length 1024;      # Only compress files > 1KB (not worth it for smaller)
     gzip_types text/plain text/css text/xml text/javascript application/x-javascript application/xml+rss application/json;
 
-    # Security headers
+    # SECURITY HEADERS
+    #
+    # WHY THESE HEADERS?
+    # - Protect against common web vulnerabilities
+    # - Defense in depth (even if app has bugs)
+    # - Required by many security audits/compliance
+    #
+    # X-Frame-Options: SAMEORIGIN
+    # - Prevents clickjacking attacks
+    # - Only allows page to be embedded in iframe on same domain
+    # - Stops malicious sites from tricking users with invisible overlays
+    #
+    # X-Content-Type-Options: nosniff
+    # - Prevents MIME type sniffing
+    # - Browser must respect Content-Type header
+    # - Stops browser from executing JS disguised as images
+    #
+    # X-XSS-Protection: 1; mode=block
+    # - Enables browser's XSS filter
+    # - Blocks page if XSS attack detected
+    # - Legacy header (modern browsers have better protection)
+    #
+    # Referrer-Policy: no-referrer-when-downgrade
+    # - Controls referer header sent to other sites
+    # - Don't send referer when going from HTTPS to HTTP
+    # - Prevents leaking sensitive URLs
+    #
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-XSS-Protection "1; mode=block" always;
     add_header Referrer-Policy "no-referrer-when-downgrade" always;
 
-    # Cache static assets
+    # CACHE STATIC ASSETS
+    #
+    # WHY CACHE?
+    # - Images, fonts, CSS, JS rarely change
+    # - Tell browser to cache them for 1 year
+    # - Subsequent page loads are instant (no network request)
+    # - Cache-Control: public = can be cached by proxies/CDNs
+    # - Cache-Control: immutable = file will never change (safe to cache forever)
+    #
+    # ~* matches file extensions case-insensitively
+    # \. requires literal dot (not regex wildcard)
     location ~* \.(jpg|jpeg|png|gif|ico|css|js|svg|woff|woff2|ttf|eot)$ {
-        expires 1y;
-        add_header Cache-Control "public, immutable";
+        expires 1y;                                  # Cache for 1 year
+        add_header Cache-Control "public, immutable"; # Safe to cache forever
     }
 
-    # API proxy (if needed)
+    # API PROXY (OPTIONAL)
+    #
+    # WHAT THIS DOES:
+    # - Forwards /api/* requests to backend service
+    # - Enables same-origin requests (avoids CORS issues)
+    # - Frontend at example.com/app -> Backend at example.com/api
+    #
+    # WHY PROXY IN FRONTEND?
+    # - Simplifies CORS (Cross-Origin Resource Sharing)
+    # - Single domain for frontend + backend
+    # - Easier SSL/TLS termination
+    #
+    # PROXY OPTIONS:
+    # - proxy_pass: Backend URL (http://backend:8000)
+    # - proxy_http_version 1.1: Use HTTP/1.1 (required for websockets)
+    # - proxy_set_header: Forward client information to backend
+    #   * Upgrade/Connection: WebSocket support
+    #   * Host: Original hostname
+    #   * X-Real-IP: Client's IP address
+    #   * X-Forwarded-For: Proxy chain
+    #   * X-Forwarded-Proto: Original protocol (http/https)
+    #
     location /api {
-        proxy_pass http://backend:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host \$host;
-        proxy_cache_bypass \$http_upgrade;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_pass http://backend:8000;                # Backend service URL
+        proxy_http_version 1.1;                        # HTTP/1.1 for websockets
+        proxy_set_header Upgrade \$http_upgrade;       # WebSocket upgrade header
+        proxy_set_header Connection 'upgrade';         # WebSocket connection header
+        proxy_set_header Host \$host;                  # Forward original host
+        proxy_cache_bypass \$http_upgrade;             # Don't cache websockets
+        proxy_set_header X-Real-IP \$remote_addr;      # Client IP
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for; # Proxy chain
+        proxy_set_header X-Forwarded-Proto \$scheme;   # http or https
     }
 
-    # SPA routing - always serve index.html for non-file requests
+    # SPA (SINGLE PAGE APPLICATION) ROUTING
+    #
+    # WHAT IS SPA ROUTING?
+    # - React Router uses client-side routing (e.g., /dashboard, /profile)
+    # - These routes don't exist as actual files on the server
+    # - Direct navigation or refresh would return 404
+    #
+    # THE FIX:
+    # - try_files: Try to serve file, then directory, then index.html
+    # - All non-file routes serve index.html
+    # - React Router takes over and renders the correct component
+    #
+    # FLOW:
+    # 1. User navigates to /dashboard
+    # 2. Nginx looks for /dashboard file (doesn't exist)
+    # 3. Nginx looks for /dashboard/ directory (doesn't exist)
+    # 4. Nginx serves /index.html (the React app)
+    # 5. React Router sees /dashboard and renders Dashboard component
+    #
     location / {
         try_files \$uri \$uri/ /index.html;
     }
 
-    # Health check endpoint
+    # HEALTH CHECK ENDPOINT
+    #
+    # WHY HEALTH CHECKS?
+    # - Kubernetes pings this to verify container is healthy
+    # - Returns 200 OK if Nginx is running
+    # - If fails, Kubernetes restarts the container
+    #
+    # OPTIONS:
+    # - access_log off: Don't log health checks (clutters logs)
+    # - return 200: Always return success
+    # - add_header Content-Type: Set MIME type
+    #
     location /health {
-        access_log off;
-        return 200 "healthy\n";
-        add_header Content-Type text/plain;
+        access_log off;                     # Don't log health checks
+        return 200 "healthy\n";              # Always return 200 OK
+        add_header Content-Type text/plain; # Plain text response
     }
 }
 EOF
 
-# Copy built files from builder
+# COPY BUILT FILES FROM BUILDER STAGE
+#
+# --from=builder: Copy from stage 1 (not from host)
+# /app/dist: Vite build output directory
+# /usr/share/nginx/html: Nginx default document root
+#
+# WHAT'S COPIED:
+# - index.html: Entry point
+# - assets/: All JS, CSS, images
+# - favicon, manifest.json, etc.
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# Create non-root user and adjust permissions
+# ADJUST PERMISSIONS FOR NON-ROOT USER
+#
+# WHY?
+# - Default Nginx runs as root (security risk)
+# - We'll switch to nginx user (non-root)
+# - nginx user needs read access to files and write access to temp dirs
+#
+# DIRECTORIES:
+# - /usr/share/nginx/html: Static files (needs read)
+# - /var/cache/nginx: Cache directory (needs read/write)
+# - /var/log/nginx: Log files (needs write)
+# - /var/run/nginx.pid: PID file (needs write)
+#
 RUN chown -R nginx:nginx /usr/share/nginx/html && \
     chown -R nginx:nginx /var/cache/nginx && \
     chown -R nginx:nginx /var/log/nginx && \
     touch /var/run/nginx.pid && \
     chown nginx:nginx /var/run/nginx.pid
 
-# Switch to non-root user
+# SWITCH TO NON-ROOT USER
+#
+# SECURITY BENEFIT:
+# - If Nginx is compromised, attacker only has nginx user permissions
+# - Can't install packages, modify system files, or escalate privileges
 USER nginx
 
-# Expose port
+# EXPOSE PORT
+#
+# DOCUMENTATION ONLY:
+# - Tells Docker/Kubernetes that Nginx listens on port 80
+# - Doesn't actually open the port (orchestrator does that)
 EXPOSE 80
 
-# Health check
+# HEALTH CHECK
+#
+# DOCKER/KUBERNETES HEALTH CHECK:
+# - Runs curl http://localhost/health every 30 seconds
+# - If fails 3 times in a row, container marked unhealthy
+# - Kubernetes will restart unhealthy containers
+#
+# OPTIONS:
+# - --interval=30s: Check every 30 seconds
+# - --timeout=10s: Wait up to 10 seconds for response
+# - --start-period=10s: Wait 10s before first check (nginx starts fast)
+# - --retries=3: Mark unhealthy after 3 consecutive failures
+#
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD curl -f http://localhost/health || exit 1
 
-# Start nginx
+# CONTAINER STARTUP COMMAND
+#
+# CMD vs ENTRYPOINT:
+# - CMD: Default command, can be overridden
+# - ENTRYPOINT: Always runs, CMD becomes arguments
+#
+# nginx -g "daemon off;":
+# - -g: Pass global directive
+# - daemon off: Run in foreground (not as background daemon)
+#
+# WHY "daemon off"?
+# - Docker/Kubernetes expect process to run in foreground
+# - If Nginx daemonizes, container exits immediately
+# - Foreground mode allows proper signal handling (SIGTERM for graceful shutdown)
+#
 CMD ["nginx", "-g", "daemon off;"]
+
+################################################################################
+# END OF DOCKERFILE
+################################################################################
+#
+# HOW TO BUILD:
+#   cd frontend
+#   docker build -t marketing-agent-frontend:latest -f ../infrastructure/docker/Dockerfile.frontend .
+#
+# HOW TO RUN LOCALLY:
+#   docker run -p 3000:80 marketing-agent-frontend:latest
+#   # Visit http://localhost:3000
+#
+# DEVELOPMENT WORKFLOW:
+#   1. Make changes to React code
+#   2. Build image: docker build -t frontend:v2 .
+#   3. Push to registry: docker push your-registry.com/frontend:v2
+#   4. Deploy to Kubernetes: kubectl set image deployment/frontend frontend=frontend:v2
+#
+# OPTIMIZATION TIPS:
+#   ✅ Multi-stage build (this Dockerfile)
+#   ✅ Gzip compression enabled
+#   ✅ Static asset caching
+#   ✅ Minimal base image (Alpine)
+#   - Consider: CDN for static assets (CloudFront, CloudFlare)
+#   - Consider: Brotli compression (better than gzip, wider support needed)
+#
+# SECURITY CHECKLIST:
+#   ✅ Non-root user
+#   ✅ Security headers
+#   ✅ Health checks
+#   ✅ Minimal base image
+#   ✅ No hardcoded secrets
+#   - Consider: Content Security Policy (CSP) header
+#   - Consider: Subresource Integrity (SRI) for external scripts
+#
+# MONITORING:
+#   - View logs: docker logs <container_id>
+#   - Check health: docker inspect --format='{{.State.Health.Status}}' <container_id>
+#   - Nginx metrics: Add stub_status module for /metrics endpoint
+#
+# NGINX ALTERNATIVES:
+#   - Apache HTTPD: More features, heavier
+#   - Caddy: Automatic HTTPS, simpler config
+#   - Traefik: Designed for containers/microservices
+#   - Node/Express: If you need SSR or API integration
+#
+################################################################################

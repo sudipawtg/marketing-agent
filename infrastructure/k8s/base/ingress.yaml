@@ -1,42 +1,468 @@
+################################################################################
+# INGRESS
+################################################################################
+#
+# WHAT IS AN INGRESS?
+#   Entry point for HTTP/HTTPS traffic into the Kubernetes cluster
+#   Routes external traffic to internal services
+#   Provides load balancing, SSL termination, and virtual hosting
+#
+# WHY NEEDED?
+#   Without Ingress:
+#   - Each service needs separate LoadBalancer (expensive)
+#   - No SSL/TLS termination
+#   - No HTTP routing rules
+#
+#   With Ingress:
+#   - One entry point for all traffic
+#   - Automatic SSL/TLS with cert-manager
+#   - Route by hostname or path
+#   - Cost-effective (one load balancer for many services)
+#
+# ARCHITECTURE:
+#
+#   Internet
+#      ↓
+#   Cloud Load Balancer (AWS ELB, GCP LB, Azure LB)
+#      ↓
+#   Ingress Controller (nginx, traefik, istio)
+#      ↓
+#   Ingress Resource (this file) ← Routing rules
+#      ↓
+#   Services (backend, frontend)
+#      ↓
+#   Pods
+#
+# INGRESS CONTROLLER:
+#   - This Ingress requires nginx-ingress-controller to be installed
+#   - Ingress Controller reads Ingress resources and configures routing
+#   - Without controller, Ingress resource does nothing
+#
+# INSTALL NGINX INGRESS CONTROLLER:
+#   helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+#   helm repo update
+#   helm install nginx-ingress ingress-nginx/ingress-nginx \
+#     --namespace ingress-nginx --create-namespace
+#
+################################################################################
+
 apiVersion: networking.k8s.io/v1
 kind: Ingress
+
 metadata:
   name: marketing-agent-ingress
   namespace: marketing-agent
+  
+  ############################################################################
+  # ANNOTATIONS
+  ############################################################################
+  #
+  # WHAT ARE ANNOTATIONS?
+  #   Configuration directives for Ingress Controller
+  #   Different controllers support different annotations
+  #
+  # NOTE: These are nginx-specific annotations
+  #
   annotations:
+    ########################################################################
+    # INGRESS CLASS: Which Ingress Controller handles this Ingress?
+    ########################################################################
+    #
+    # kubernetes.io/ingress.class: nginx
+    # - Use nginx-ingress-controller (not traefik, istio, etc.)
+    # - If you have multiple Ingress Controllers, this selects which one
+    #
+    # MODERN ALTERNATIVE (Kubernetes 1.18+):
+    #   spec:
+    #     ingressClassName: nginx
+    #
     kubernetes.io/ingress.class: nginx
+    
+    ########################################################################
+    # SSL/TLS CERTIFICATE MANAGEMENT
+    ########################################################################
+    #
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+    # - Automatically obtain SSL certificates from Let's Encrypt
+    # - cert-manager watches Ingress resources with this annotation
+    # - Creates Certificate & Secret automatically
+    #
+    # PREREQUISITES:
+    # 1. Install cert-manager:
+    #    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.12.0/cert-manager.yaml
+    #
+    # 2. Create ClusterIssuer:
+    #    ```yaml
+    #    apiVersion: cert-manager.io/v1
+    #    kind: ClusterIssuer
+    #    metadata:
+    #      name: letsencrypt-prod
+    #    spec:
+    #      acme:
+    #        server: https://acme-v02.api.letsencrypt.org/directory
+    #        email: admin@example.com
+    #        privateKeySecretRef:
+    #          name: letsencrypt-prod
+    #        solvers:
+    #          - http01:
+    #              ingress:
+    #                class: nginx
+    #    ```
+    #
+    # HOW IT WORKS:
+    # 1. cert-manager sees Ingress with this annotation
+    # 2. Creates ACME challenge (http01 or dns01)
+    # 3. Let's Encrypt validates domain ownership
+    # 4. cert-manager receives certificate
+    # 5. Stores in Secret: marketing-agent-tls
+    # 6. nginx-ingress uses certificate for HTTPS
+    #
+    # CERTIFICATE RENEWAL:
+    # - Let's Encrypt certificates expire after 90 days
+    # - cert-manager automatically renews 30 days before expiration
+    #
     cert-manager.io/cluster-issuer: letsencrypt-prod
+    
+    ########################################################################
+    # SSL REDIRECT
+    ########################################################################
+    #
+    # nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # - Automatically redirect HTTP to HTTPS
+    # - http://example.com → https://example.com
+    #
+    # nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    # - Force redirect even if TLS is not configured yet
+    # - More aggressive than ssl-redirect
+    #
+    # SECURITY:
+    # - Ensures all traffic is encrypted
+    # - Prevents man-in-the-middle attacks
+    # - Required for: Authentication, sensitive data, GDPR compliance
+    #
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    
+    ########################################################################
+    # REQUEST SIZE LIMIT
+    ########################################################################
+    #
+    # nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    # - Maximum request body size: 10 megabytes
+    # - Prevents large file uploads from overwhelming server
+    #
+    # SCENARIOS:
+    # - Default nginx limit: 1m (1 megabyte)
+    # - User uploads profile picture: 2-5 MB (needs higher limit)
+    # - User uploads video: 100+ MB (increase to "100m" or use S3 upload)
+    #
+    # ERROR IF EXCEEDED:
+    # - HTTP 413 Request Entity Too Large
+    #
     nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    
+    ########################################################################
+    # RATE LIMITING
+    ########################################################################
+    #
+    # nginx.ingress.kubernetes.io/rate-limit: "100"
+    # - Maximum 100 requests per minute per IP address
+    # - Prevents abuse, brute force attacks, DDoS
+    #
+    # HOW IT WORKS:
+    # - nginx tracks requests per client IP
+    # - If exceeded: HTTP 429 Too Many Requests
+    #
+    # TUNING:
+    # - Too low: Legitimate users get rate limited
+    # - Too high: Doesn't prevent abuse
+    # - Typical values:
+    #   * Public API: 60-100 requests/minute
+    #   * Authenticated API: 1000+ requests/minute
+    #   * Admin endpoints: 10-20 requests/minute
+    #
+    # ADVANCED RATE LIMITING:
+    #   nginx.ingress.kubernetes.io/limit-rps: "10"  # Requests per second
+    #   nginx.ingress.kubernetes.io/limit-connections: "5"  # Concurrent connections
+    #
     nginx.ingress.kubernetes.io/rate-limit: "100"
+    
+    ########################################################################
+    # CORS (CROSS-ORIGIN RESOURCE SHARING)
+    ########################################################################
+    #
+    # WHAT IS CORS?
+    #   Browser security feature that blocks requests from different origins
+    #   Origin = protocol + domain + port
+    #   Example: https://app.example.com cannot call https://api.example.com
+    #            (different subdomains = different origins)
+    #
+    # nginx.ingress.kubernetes.io/cors-allow-origin: "*"
+    # - Allow requests from any origin
+    # - "*" = wildcard (all domains)
+    #
+    # SECURITY WARNING:
+    #   "*" is permissive (any website can call your API)
+    #
+    # FOR PRODUCTION:
+    #   Specify exact origins:
+    #   cors-allow-origin: "https://marketing-agent.example.com,https://app.example.com"
+    #
+    # nginx.ingress.kubernetes.io/enable-cors: "true"
+    # - Enable CORS headers
+    # - Sets Access-Control-Allow-Origin, Access-Control-Allow-Methods
+    #
+    # ADDITIONAL CORS ANNOTATIONS:
+    #   nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    #   nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,X-CustomHeader,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Authorization"
+    #   nginx.ingress.kubernetes.io/cors-allow-credentials: "true"
+    #   nginx.ingress.kubernetes.io/cors-max-age: "3600"
+    #
     nginx.ingress.kubernetes.io/cors-allow-origin: "*"
     nginx.ingress.kubernetes.io/enable-cors: "true"
+
 spec:
+  ############################################################################
+  # TLS CONFIGURATION
+  ############################################################################
+  #
+  # WHAT IS TLS?
+  #   Transport Layer Security (successor to SSL)
+  #   Encrypts traffic between browser and server
+  #   Provides authentication (proves server identity)
+  #
+  # HOW IT WORKS:
+  # 1. Browser connects to https://marketing-agent.example.com
+  # 2. Ingress Controller presents TLS certificate
+  # 3. Browser verifies certificate (issued by trusted CA)
+  # 4. Encrypted connection established
+  #
   tls:
     - hosts:
+        # HOSTNAMES: Which domains use this certificate?
+        # - Must match DNS records pointing to load balancer
+        # - Let's Encrypt validates ownership of these domains
+        #
+        # DNS SETUP REQUIRED:
+        # marketing-agent.example.com → A record → <load-balancer-ip>
+        # api.marketing-agent.example.com → A record → <load-balancer-ip>
+        #
+        # WILDCARD ALTERNATIVE:
+        # - hosts: ["*.marketing-agent.example.com"]
+        # - Covers all subdomains (api, app, staging, etc.)
+        # - Requires DNS validation (not http01)
+        #
         - marketing-agent.example.com
         - api.marketing-agent.example.com
+      
+      # SECRET NAME: Where is the TLS certificate stored?
+      # - cert-manager creates this secret automatically
+      # - Contains: tls.crt (certificate) and tls.key (private key)
+      # - Format: kubernetes.io/tls secret type
+      #
+      # VIEW CERTIFICATE:
+      #   kubectl get secret marketing-agent-tls -n marketing-agent -o yaml
+      #
+      # MANUAL CERTIFICATE (if not using cert-manager):
+      #   kubectl create secret tls marketing-agent-tls \
+      #     --cert=path/to/tls.crt \
+      #     --key=path/to/tls.key \
+      #     -n marketing-agent
+      #
       secretName: marketing-agent-tls
+  
+  ############################################################################
+  # ROUTING RULES
+  ############################################################################
+  #
+  # RULES: Map hostnames and paths to backend services
+  #
   rules:
+    ########################################################################
+    # RULE 1: Frontend (marketing-agent.example.com)
+    ########################################################################
+    #
+    # HOSTNAME: marketing-agent.example.com
+    # - Main application URL
+    # - Serves React frontend (login page, dashboard, etc.)
+    #
     - host: marketing-agent.example.com
       http:
         paths:
+          # PATH: / (root and all subpaths)
+          #
+          # pathType: Prefix
+          # - Matches / and everything under it
+          # - /about, /dashboard, /api → all match
+          #
+          # PATH TYPES:
+          # - Prefix: Matches prefix (most common)
+          #   path: /api → matches /api, /api/users, /api/v1/users
+          # - Exact: Exact match only
+          #   path: /api → matches ONLY /api (not /api/users)
+          # - ImplementationSpecific: Controller-specific behavior
+          #
           - path: /
             pathType: Prefix
+            
+            # BACKEND: Where to send traffic?
             backend:
               service:
+                # SERVICE NAME: marketing-agent-frontend
+                # - ClusterIP service defined in frontend-deployment.yaml
+                # - Kubernetes DNS: marketing-agent-frontend.marketing-agent.svc.cluster.local
+                #
                 name: marketing-agent-frontend
+                
+                # PORT: 80
+                # - Service port (not container port)
+                # - Service listens on 80, forwards to container port 80
+                #
                 port:
                   number: 80
     
+    ########################################################################
+    # RULE 2: Backend API (api.marketing-agent.example.com)
+    ########################################################################
+    #
+    # HOSTNAME: api.marketing-agent.example.com
+    # - Separate subdomain for API
+    # - Allows different CORS policies, rate limits
+    # - Better for API versioning (v1.api.example.com, v2.api.example.com)
+    #
+    # WHY SEPARATE SUBDOMAIN?
+    # - Cleaner architecture (frontend and API separated)
+    # - Can scale independently
+    # - Different caching strategies (cache frontend, don't cache API)
+    # - API can be on different infrastructure
+    #
+    # ALTERNATIVE DESIGN:
+    #   Single domain with path-based routing:
+    #   - marketing-agent.example.com/ → Frontend
+    #   - marketing-agent.example.com/api → Backend
+    #
     - host: api.marketing-agent.example.com
       http:
         paths:
+          # PATH: / (all API endpoints)
           - path: /
             pathType: Prefix
             backend:
               service:
+                # SERVICE NAME: marketing-agent-backend
+                # - FastAPI application
+                # - Endpoints: /health, /api/v1/campaigns, /api/v1/analytics, etc.
+                #
                 name: marketing-agent-backend
+                
+                # PORT: 8000
+                # - FastAPI/uvicorn default port
+                #
                 port:
                   number: 8000
+
+################################################################################
+# END OF INGRESS CONFIGURATION
+################################################################################
+#
+# HOW TO APPLY:
+#   kubectl apply -f ingress.yaml
+#
+# HOW TO VIEW:
+#   kubectl get ingress -n marketing-agent
+#   kubectl describe ingress marketing-agent-ingress -n marketing-agent
+#
+# HOW TO GET LOAD BALANCER IP:
+#   kubectl get svc -n ingress-nginx
+#   # Look for EXTERNAL-IP of ingress-nginx-controller service
+#
+# HOW TO CONFIGURE DNS:
+#   1. Get load balancer IP:
+#      LOAD_BALANCER_IP=$(kubectl get svc ingress-nginx-controller \
+#        -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+#
+#   2. Create DNS A records:
+#      marketing-agent.example.com → $LOAD_BALANCER_IP
+#      api.marketing-agent.example.com → $LOAD_BALANCER_IP
+#
+#   3. Wait for DNS propagation (5-60 minutes):
+#      nslookup marketing-agent.example.com
+#
+#   4. Wait for cert-manager to issue certificate (1-5 minutes):
+#      kubectl get certificate -n marketing-agent
+#      kubectl describe certificate marketing-agent-tls -n marketing-agent
+#
+# HOW TO TEST:
+#   # Test frontend:
+#   curl -v https://marketing-agent.example.com
+#
+#   # Test backend API:
+#   curl -v https://api.marketing-agent.example.com/health
+#
+#   # Test HTTP redirect:
+#   curl -v http://marketing-agent.example.com
+#   # Should redirect to https://
+#
+# TROUBLESHOOTING:
+#
+#   1. 404 Not Found:
+#      - Check service exists: kubectl get svc -n marketing-agent
+#      - Check pods are running: kubectl get pods -n marketing-agent
+#      - Check service selector matches pod labels
+#
+#   2. 503 Service Unavailable:
+#      - No healthy pods behind service
+#      - Check readiness probes: kubectl describe pod <pod-name>
+#
+#   3. SSL certificate errors:
+#      - Check certificate exists: kubectl get certificate -n marketing-agent
+#      - Check cert-manager logs: kubectl logs -n cert-manager deployment/cert-manager
+#      - Check ACME challenge: kubectl get challenges -n marketing-agent
+#
+#   4. "No route to host" or "Connection refused":
+#      - Load balancer not created yet (check cloud provider console)
+#      - Firewall rules blocking traffic
+#      - DNS not pointing to load balancer IP
+#
+#   5. Ingress Controller not installed:
+#      kubectl get pods -n ingress-nginx
+#      # If empty, install nginx-ingress-controller
+#
+# ADVANCED FEATURES:
+#
+#   1. CUSTOM ERROR PAGES:
+#      nginx.ingress.kubernetes.io/custom-http-errors: "404,503"
+#      nginx.ingress.kubernetes.io/default-backend: custom-error-pages
+#
+#   2. AUTHENTICATION:
+#      nginx.ingress.kubernetes.io/auth-type: basic
+#      nginx.ingress.kubernetes.io/auth-secret: basic-auth
+#
+#   3. WEBSOCKET SUPPORT:
+#      nginx.ingress.kubernetes.io/websocket-services: "backend-websocket"
+#
+#   4. REWRITE RULES:
+#      nginx.ingress.kubernetes.io/rewrite-target: /$2
+#      path: /api(/|$)(.*)
+#
+#   5. EXTERNAL AUTHENTICATION (OAuth2):
+#      nginx.ingress.kubernetes.io/auth-url: "https://auth.example.com/oauth2/auth"
+#      nginx.ingress.kubernetes.io/auth-signin: "https://auth.example.com/oauth2/start"
+#
+# MONITORING:
+#   # Ingress Controller exposes Prometheus metrics:
+#   kubectl port-forward -n ingress-nginx service/ingress-nginx-controller-metrics 10254:10254
+#   curl http://localhost:10254/metrics
+#
+#   # Key metrics:
+#   - nginx_ingress_controller_requests: Request count
+#   - nginx_ingress_controller_request_duration_seconds: Latency
+#   - nginx_ingress_controller_config_last_reload_successful: Config reload status
+#
+# COST OPTIMIZATION:
+#   - One Ingress with multiple rules = One load balancer
+#   - Multiple Ingress resources = Multiple load balancers (expensive)
+#   - AWS ALB: ~$20/month per load balancer
+#   - GCP LB: ~$18/month per load balancer
+#
+################################################################################
